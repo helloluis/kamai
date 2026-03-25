@@ -7,12 +7,12 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import { apiKeyAuth } from './api/middleware/auth.js';
 import { rateLimit } from './api/middleware/rate-limit.js';
 import { creditPayment } from './payment/middleware.js';
 import browseRouter from './api/routes/browse.js';
 import sessionRouter from './api/routes/session.js';
 import depositRouter from './api/routes/deposit.js';
+import accountRouter from './api/routes/account.js';
 import healthRouter from './api/routes/health.js';
 import { shutdown } from './browser/index.js';
 import { closeCreditsDb } from './payment/credits.js';
@@ -29,12 +29,13 @@ app.use(express.json({ limit: '1mb' }));
 // Public routes
 app.use('/health', healthRouter);
 
-// Credit management
+// Account & credit management
+app.use('/api/v1/account', rateLimit, accountRouter);
 app.use('/api/v1/deposit', rateLimit, depositRouter);
 
-// Protected routes — credit-based payment
-app.use('/api/v1/browse', rateLimit, apiKeyAuth, creditPayment(), browseRouter);
-app.use('/api/v1/session', rateLimit, apiKeyAuth, sessionRouter);
+// Protected routes — credit-based payment (identity via wallet or API key)
+app.use('/api/v1/browse', rateLimit, creditPayment(), browseRouter);
+app.use('/api/v1/session', rateLimit, sessionRouter);
 
 // Skill file — downloadable LLM integration spec
 app.get('/skill.md', (_req, res) => {

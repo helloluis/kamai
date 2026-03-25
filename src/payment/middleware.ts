@@ -1,16 +1,20 @@
 /**
- * Payment Middleware — credit-based with x402 fallback.
+ * Payment Middleware — credit-based with wallet-first identity.
+ *
+ * Identity resolution (checked in order):
+ *   1. x-wallet-address header → wallet address directly
+ *   2. x-api-key header → look up linked wallet
  *
  * Flow:
- * 1. Check API key → get account
- * 2. First request of the day → free (no charge)
- * 3. Has credits → deduct and proceed
- * 4. No credits → return 402 Payment Required
+ *   1. Resolve identity → get wallet
+ *   2. First request of the day → free (no charge)
+ *   3. Has credits → deduct and proceed
+ *   4. No credits → return 402 with deposit instructions
  *
- * Sister apps (minai, beanie) get 50% discount.
+ * Sister wallets/keys get 50% discount.
  */
 import type { Request, Response, NextFunction } from 'express';
-import { getAccount, canAfford, chargeRequest } from './credits.js';
+import { resolveWallet, getAccount, canAfford, chargeRequest } from './credits.js';
 import {
   CELO_NETWORK,
   USDC_ADDRESS,
@@ -21,22 +25,43 @@ import {
   usdToUsdcUnits,
 } from './config.js';
 
+/** Resolve the caller's wallet from request headers. */
+function getCallerWallet(req: Request): string | null {
+  const walletHeader = req.headers['x-wallet-address'] as string | undefined;
+  if (walletHeader) return resolveWallet(walletHeader);
+
+  const apiKey = req.headers['x-api-key'] as string | undefined;
+  if (apiKey) return resolveWallet(apiKey);
+
+  return null;
+}
+
+/** Check if the caller is a sister app. */
+function isSisterCaller(req: Request): boolean {
+  const apiKey = req.headers['x-api-key'] as string | undefined;
+  const wallet = (req.headers['x-wallet-address'] as string)?.toLowerCase();
+  return (apiKey ? SISTER_KEYS.has(apiKey) : false) || (wallet ? SISTER_KEYS.has(wallet) : false);
+}
+
 export function creditPayment() {
   return (req: Request, res: Response, next: NextFunction): void => {
-    const apiKey = req.headers['x-api-key'] as string;
-    if (!apiKey) {
-      res.status(401).json({ ok: false, error: 'Missing x-api-key header' });
+    const wallet = getCallerWallet(req);
+    if (!wallet) {
+      res.status(401).json({
+        ok: false,
+        error: 'Missing identity. Send x-wallet-address or x-api-key header.',
+      });
       return;
     }
 
     // Determine pricing
     const hasActions = Array.isArray(req.body?.actions) && req.body.actions.length > 0;
-    const isSister = SISTER_KEYS.has(apiKey);
-    const cost = getRequestPrice(hasActions, isSister);
+    const sister = isSisterCaller(req);
+    const cost = getRequestPrice(hasActions, sister);
 
     // Check if user can afford it (includes daily freebie check)
-    if (!canAfford(apiKey, cost)) {
-      const account = getAccount(apiKey);
+    if (!canAfford(wallet, cost)) {
+      const account = getAccount(wallet);
       res.status(402).json({
         ok: false,
         error: 'Insufficient credits',
@@ -55,32 +80,27 @@ export function creditPayment() {
       return;
     }
 
-    // Charge after the request succeeds (attach to res.on('finish'))
+    // Charge after the request succeeds
     const url = req.body?.url || 'unknown';
 
     res.on('finish', () => {
-      // Only charge for successful responses
       if (res.statusCode >= 200 && res.statusCode < 300) {
-        const { charged, wasFree } = chargeRequest(apiKey, url, cost, hasActions);
+        const { charged, wasFree } = chargeRequest(wallet, url, cost, hasActions);
         if (wasFree) {
-          console.log(`[Credits] FREE daily request for ${apiKey.slice(0, 12)}... → ${url}`);
+          console.log(`[Credits] FREE daily request for ${wallet.slice(0, 10)}... → ${url}`);
         } else if (charged > 0) {
-          const discount = isSister ? ' (sister 50% off)' : '';
-          console.log(`[Credits] -$${charged.toFixed(3)}${discount} from ${apiKey.slice(0, 12)}... → ${url}`);
+          const discount = sister ? ' (sister 50% off)' : '';
+          console.log(`[Credits] -$${charged.toFixed(3)}${discount} from ${wallet.slice(0, 10)}... → ${url}`);
         }
       }
     });
 
     // Add pricing info to response headers
     res.setHeader('X-Request-Cost', cost.toFixed(3));
-    if (isSister) res.setHeader('X-Sister-Discount', '50%');
+    if (sister) res.setHeader('X-Sister-Discount', '50%');
 
     next();
   };
 }
 
-/**
- * Legacy x402 per-request payment (kept for protocol compatibility).
- * Use creditPayment() for production.
- */
 export { paymentRequired } from './middleware-x402.js';

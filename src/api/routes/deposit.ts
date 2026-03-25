@@ -1,20 +1,22 @@
 /**
  * POST /api/v1/deposit — verify a USDC deposit and credit the account.
+ * GET  /api/v1/deposit/balance — check current balance.
  *
- * Client sends a tx hash of a USDC transfer to the kamAI wallet.
- * We verify it on-chain and add the amount to their credit balance.
+ * Identity: x-wallet-address header (required).
  */
 import { Router } from 'express';
 import { verifyPayment } from '../../payment/verifier.js';
-import { creditDeposit, isDepositUsed, getAccount } from '../../payment/credits.js';
+import { creditDeposit, isDepositUsed, getAccount, resolveWallet } from '../../payment/credits.js';
 import { MIN_DEPOSIT } from '../../payment/config.js';
 
 const router = Router();
 
 router.post('/', async (req, res) => {
-  const apiKey = req.headers['x-api-key'] as string;
-  if (!apiKey) {
-    res.status(401).json({ ok: false, error: 'Missing x-api-key header' });
+  const wallet = resolveWallet(
+    (req.headers['x-wallet-address'] as string) || (req.headers['x-api-key'] as string) || '',
+  );
+  if (!wallet) {
+    res.status(401).json({ ok: false, error: 'Missing x-wallet-address or x-api-key header' });
     return;
   }
 
@@ -24,21 +26,14 @@ router.post('/', async (req, res) => {
     return;
   }
 
-  // Check if already used
   if (isDepositUsed(txHash)) {
     res.status(409).json({ ok: false, error: 'This transaction has already been credited' });
     return;
   }
 
-  // Verify on-chain
-  const result = await verifyPayment(txHash as `0x${string}`, 0); // 0 = accept any amount
-
+  const result = await verifyPayment(txHash as `0x${string}`, 0);
   if (!result.valid) {
-    res.status(400).json({
-      ok: false,
-      error: 'Payment verification failed',
-      details: result.error,
-    });
+    res.status(400).json({ ok: false, error: 'Payment verification failed', details: result.error });
     return;
   }
 
@@ -51,17 +46,17 @@ router.post('/', async (req, res) => {
     return;
   }
 
-  // Credit the account
   try {
-    creditDeposit(apiKey, txHash, amountUsd);
-    const account = getAccount(apiKey);
+    creditDeposit(wallet, txHash, amountUsd);
+    const account = getAccount(wallet);
 
-    console.log(`[Deposit] $${amountUsd.toFixed(2)} from ${result.from} for key ${apiKey.slice(0, 12)}... (balance: $${account.balance_usd.toFixed(2)})`);
+    console.log(`[Deposit] $${amountUsd.toFixed(2)} from ${result.from} → ${wallet.slice(0, 10)}... (balance: $${account.balance_usd.toFixed(2)})`);
 
     res.json({
       ok: true,
       deposited: amountUsd,
       balance: account.balance_usd,
+      wallet,
       txHash,
       from: result.from,
     });
@@ -70,21 +65,24 @@ router.post('/', async (req, res) => {
   }
 });
 
-/** GET /api/v1/deposit/balance — check current balance */
 router.get('/balance', (req, res) => {
-  const apiKey = req.headers['x-api-key'] as string;
-  if (!apiKey) {
-    res.status(401).json({ ok: false, error: 'Missing x-api-key header' });
+  const wallet = resolveWallet(
+    (req.headers['x-wallet-address'] as string) || (req.headers['x-api-key'] as string) || '',
+  );
+  if (!wallet) {
+    res.status(401).json({ ok: false, error: 'Missing x-wallet-address or x-api-key header' });
     return;
   }
 
-  const account = getAccount(apiKey);
+  const account = getAccount(wallet);
   res.json({
     ok: true,
+    wallet: account.wallet,
     balance: account.balance_usd,
     totalDeposited: account.total_deposited_usd,
     totalSpent: account.total_spent_usd,
     requestCount: account.request_count,
+    apiKey: account.api_key,
   });
 });
 
