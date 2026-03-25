@@ -1,5 +1,5 @@
 /**
- * kamAI — Headless browser API with x402 micropayments on Celo.
+ * kamAI — Headless browser API with micropayments on Celo.
  *
  * Open-source browser automation service that lets LLM agents
  * browse the web, fill forms, and extract content.
@@ -9,11 +9,13 @@ import express from 'express';
 import cors from 'cors';
 import { apiKeyAuth } from './api/middleware/auth.js';
 import { rateLimit } from './api/middleware/rate-limit.js';
-import { paymentRequired } from './payment/index.js';
+import { creditPayment } from './payment/middleware.js';
 import browseRouter from './api/routes/browse.js';
 import sessionRouter from './api/routes/session.js';
+import depositRouter from './api/routes/deposit.js';
 import healthRouter from './api/routes/health.js';
 import { shutdown } from './browser/index.js';
+import { closeCreditsDb } from './payment/credits.js';
 
 const PORT = parseInt(process.env.PORT ?? '3100', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -27,8 +29,11 @@ app.use(express.json({ limit: '1mb' }));
 // Public routes
 app.use('/health', healthRouter);
 
-// Protected routes — payment required when PAYMENT_RECIPIENT_ADDRESS is set
-app.use('/api/v1/browse', rateLimit, apiKeyAuth, paymentRequired(), browseRouter);
+// Credit management
+app.use('/api/v1/deposit', rateLimit, depositRouter);
+
+// Protected routes — credit-based payment
+app.use('/api/v1/browse', rateLimit, apiKeyAuth, creditPayment(), browseRouter);
 app.use('/api/v1/session', rateLimit, apiKeyAuth, sessionRouter);
 
 // Skill file — downloadable LLM integration spec
@@ -44,12 +49,14 @@ app.use((_req, res) => {
 // Start
 app.listen(PORT, HOST, () => {
   console.log(`[kamAI] API server listening on ${HOST}:${PORT}`);
+  console.log(`[kamAI] Pricing: $0.01/browse, $0.015/actions (first daily request free)`);
   console.log(`[kamAI] Docs: /skill.md  Health: /health`);
 });
 
 // Graceful shutdown
 const graceful = async () => {
   console.log('[kamAI] Shutting down...');
+  closeCreditsDb();
   await shutdown();
   process.exit(0);
 };

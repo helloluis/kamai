@@ -1,126 +1,86 @@
 /**
- * x402 Payment Middleware for Express.
+ * Payment Middleware — credit-based with x402 fallback.
  *
- * Implements the x402 protocol flow on Celo:
- * 1. If no payment header → return 402 with PAYMENT-REQUIRED header
- * 2. If payment header present → verify tx on-chain → allow or reject
+ * Flow:
+ * 1. Check API key → get account
+ * 2. First request of the day → free (no charge)
+ * 3. Has credits → deduct and proceed
+ * 4. No credits → return 402 Payment Required
  *
- * Supports two modes:
- * - x402 standard: PAYMENT-SIGNATURE header with tx hash
- * - Simple mode: x-payment-tx header with just the tx hash (easier for LLM agents)
+ * Sister apps (minai, beanie) get 50% discount.
  */
 import type { Request, Response, NextFunction } from 'express';
-import { verifyPayment } from './verifier.js';
+import { getAccount, canAfford, chargeRequest } from './credits.js';
 import {
   CELO_NETWORK,
   USDC_ADDRESS,
   PAYMENT_RECIPIENT,
-  PRICE_PER_REQUEST,
+  SISTER_KEYS,
+  MIN_DEPOSIT,
+  getRequestPrice,
   usdToUsdcUnits,
 } from './config.js';
 
-// Cache of verified tx hashes to avoid re-checking
-const verifiedTxCache = new Set<string>();
-
-function buildPaymentRequired(path: string): object {
-  return {
-    x402Version: 2,
-    error: 'Payment required',
-    resource: { method: 'POST', url: path },
-    accepts: [
-      {
-        scheme: 'exact',
-        network: CELO_NETWORK,
-        asset: USDC_ADDRESS,
-        amount: usdToUsdcUnits(PRICE_PER_REQUEST).toString(),
-        payTo: PAYMENT_RECIPIENT,
-        maxTimeoutSeconds: 300,
-        extra: {
-          name: 'USD Coin',
-          version: '2',
-          description: `kamAI browse request — $${PRICE_PER_REQUEST} per request`,
-        },
-      },
-    ],
-  };
-}
-
-export function paymentRequired(priceUsd?: number) {
-  const price = priceUsd ?? PRICE_PER_REQUEST;
-
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    // Skip payment check if no recipient configured (free mode)
-    if (!PAYMENT_RECIPIENT) return next();
-
-    // Check for payment proof in headers
-    const txHash =
-      (req.headers['x-payment-tx'] as string) || // Simple mode
-      extractTxFromPaymentSignature(req.headers['payment-signature'] as string); // x402 mode
-
-    if (!txHash) {
-      // No payment — return 402
-      const paymentRequired = buildPaymentRequired(req.path);
-      const encoded = Buffer.from(JSON.stringify(paymentRequired)).toString('base64');
-      res.status(402)
-        .setHeader('PAYMENT-REQUIRED', encoded)
-        .json(paymentRequired);
+export function creditPayment() {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const apiKey = req.headers['x-api-key'] as string;
+    if (!apiKey) {
+      res.status(401).json({ ok: false, error: 'Missing x-api-key header' });
       return;
     }
 
-    // Check cache first
-    if (verifiedTxCache.has(txHash.toLowerCase())) {
-      return next();
-    }
+    // Determine pricing
+    const hasActions = Array.isArray(req.body?.actions) && req.body.actions.length > 0;
+    const isSister = SISTER_KEYS.has(apiKey);
+    const cost = getRequestPrice(hasActions, isSister);
 
-    // Verify on-chain
-    const result = await verifyPayment(txHash as `0x${string}`, price);
-
-    if (!result.valid) {
+    // Check if user can afford it (includes daily freebie check)
+    if (!canAfford(apiKey, cost)) {
+      const account = getAccount(apiKey);
       res.status(402).json({
         ok: false,
-        error: 'Payment verification failed',
-        details: result.error,
-        txHash,
+        error: 'Insufficient credits',
+        balance: account.balance_usd,
+        cost,
+        minimumDeposit: MIN_DEPOSIT,
+        depositEndpoint: '/api/v1/deposit',
+        depositInfo: {
+          network: CELO_NETWORK,
+          asset: USDC_ADDRESS,
+          payTo: PAYMENT_RECIPIENT,
+          minimumAmount: usdToUsdcUnits(MIN_DEPOSIT).toString(),
+          description: `Send at least $${MIN_DEPOSIT.toFixed(2)} USDC on Celo to ${PAYMENT_RECIPIENT}, then POST the tx hash to /api/v1/deposit`,
+        },
       });
       return;
     }
 
-    // Cache successful verification
-    verifiedTxCache.add(txHash.toLowerCase());
+    // Charge after the request succeeds (attach to res.on('finish'))
+    const url = req.body?.url || 'unknown';
 
-    // Add payment info to response headers
-    const receipt = Buffer.from(JSON.stringify({
-      txHash,
-      amount: result.amount,
-      from: result.from,
-      network: CELO_NETWORK,
-    })).toString('base64');
-    res.setHeader('PAYMENT-RESPONSE', receipt);
+    res.on('finish', () => {
+      // Only charge for successful responses
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        const { charged, wasFree } = chargeRequest(apiKey, url, cost, hasActions);
+        if (wasFree) {
+          console.log(`[Credits] FREE daily request for ${apiKey.slice(0, 12)}... → ${url}`);
+        } else if (charged > 0) {
+          const discount = isSister ? ' (sister 50% off)' : '';
+          console.log(`[Credits] -$${charged.toFixed(3)}${discount} from ${apiKey.slice(0, 12)}... → ${url}`);
+        }
+      }
+    });
 
-    console.log(`[Payment] Verified $${result.amount} from ${result.from} (tx: ${txHash.slice(0, 18)}...)`);
+    // Add pricing info to response headers
+    res.setHeader('X-Request-Cost', cost.toFixed(3));
+    if (isSister) res.setHeader('X-Sister-Discount', '50%');
+
     next();
   };
 }
 
 /**
- * Extract tx hash from a base64-encoded PAYMENT-SIGNATURE header.
+ * Legacy x402 per-request payment (kept for protocol compatibility).
+ * Use creditPayment() for production.
  */
-function extractTxFromPaymentSignature(header?: string): string | null {
-  if (!header) return null;
-  try {
-    const decoded = JSON.parse(Buffer.from(header, 'base64').toString());
-    return decoded.payload?.txHash || decoded.txHash || null;
-  } catch {
-    // Maybe it's just a raw tx hash
-    if (header.startsWith('0x') && header.length === 66) return header;
-    return null;
-  }
-}
-
-// Clean up cache periodically (keep last 10k entries)
-setInterval(() => {
-  if (verifiedTxCache.size > 10000) {
-    const entries = Array.from(verifiedTxCache);
-    entries.slice(0, entries.length - 5000).forEach((h) => verifiedTxCache.delete(h));
-  }
-}, 300_000);
+export { paymentRequired } from './middleware-x402.js';

@@ -18,15 +18,42 @@ export const CUSD_DECIMALS = 18;
 // Payment recipient — the kamAI wallet
 export const PAYMENT_RECIPIENT = (process.env.PAYMENT_RECIPIENT_ADDRESS || '') as `0x${string}`;
 
-// Default price per browse request in USD
-export const PRICE_PER_REQUEST = parseFloat(process.env.PRICE_PER_REQUEST || '0.02');
+// ─── Pricing ───
 
-// Convert USD amount to USDC base units (6 decimals)
+/** Simple page load — navigate + extract, no actions */
+export const PRICE_BROWSE = 0.01;
+
+/** Browse with actions — type, click, submit, etc. */
+export const PRICE_ACTIONS = 0.015;
+
+/** Minimum deposit to create an account */
+export const MIN_DEPOSIT = 0.10;
+
+/** Sister app API keys get 50% discount */
+export const SISTER_DISCOUNT = 0.5;
+
+/** Sister app identifiers (API keys that get the discount) */
+export const SISTER_KEYS = new Set(
+  (process.env.SISTER_API_KEYS || '')
+    .split(',')
+    .map((k) => k.trim())
+    .filter(Boolean),
+);
+
+// ─── Helpers ───
+
+/** Convert USD amount to USDC base units (6 decimals) */
 export function usdToUsdcUnits(usd: number): bigint {
   return BigInt(Math.round(usd * 10 ** USDC_DECIMALS));
 }
 
-// Format USDC units to USD string
+/** Format USDC units to USD string */
 export function usdcUnitsToUsd(units: bigint): string {
   return (Number(units) / 10 ** USDC_DECIMALS).toFixed(USDC_DECIMALS);
+}
+
+/** Get the price for a request based on whether it has actions */
+export function getRequestPrice(hasActions: boolean, isSister: boolean): number {
+  const base = hasActions ? PRICE_ACTIONS : PRICE_BROWSE;
+  return isSister ? base * SISTER_DISCOUNT : base;
 }
