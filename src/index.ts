@@ -1,5 +1,5 @@
 /**
- * kamAI — Headless browser API with micropayments on Celo.
+ * kamai — Headless browser API with micropayments on Celo.
  *
  * Open-source browser automation service that lets LLM agents
  * browse the web, fill forms, and extract content.
@@ -49,14 +49,14 @@ app.use((_req, res) => {
 
 // Start
 app.listen(PORT, HOST, () => {
-  console.log(`[kamAI] API server listening on ${HOST}:${PORT}`);
-  console.log(`[kamAI] Pricing: $0.01/browse, $0.015/actions (first daily request free)`);
-  console.log(`[kamAI] Docs: /skill.md  Health: /health`);
+  console.log(`[kamai] API server listening on ${HOST}:${PORT}`);
+  console.log(`[kamai] Pricing: $0.009/browse, $0.013/actions (first daily request free)`);
+  console.log(`[kamai] Docs: /skill.md  Health: /health`);
 });
 
 // Graceful shutdown
 const graceful = async () => {
-  console.log('[kamAI] Shutting down...');
+  console.log('[kamai] Shutting down...');
   closeCreditsDb();
   await shutdown();
   process.exit(0);

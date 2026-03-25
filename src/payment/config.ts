@@ -21,10 +21,10 @@ export const PAYMENT_RECIPIENT = (process.env.PAYMENT_RECIPIENT_ADDRESS || '') a
 // ─── Pricing ───
 
 /** Simple page load — navigate + extract, no actions */
-export const PRICE_BROWSE = 0.01;
+export const PRICE_BROWSE = 0.009;
 
 /** Browse with actions — type, click, submit, etc. */
-export const PRICE_ACTIONS = 0.015;
+export const PRICE_ACTIONS = 0.013;
 
 /** Minimum deposit to create an account */
 export const MIN_DEPOSIT = 0.10;

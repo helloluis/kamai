@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'kamAI — headless browser API for LLM agents',
+  title: 'kamai — headless browser API for LLM agents',
   description: 'Browse the web programmatically. Pay per request with USDC on Celo.',
   icons: { icon: '/favicon.svg' },
 };
