@@ -4,4 +4,4 @@ dist/
 *.db-shm
 *.db-wal
 .env
-.env.local
+.env.localdashboard/.next/
