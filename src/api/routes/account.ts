@@ -6,6 +6,7 @@
  */
 import { Router } from 'express';
 import { resolveWallet, getAccount, generateApiKey } from '../../payment/credits.js';
+import { getDepositAddress } from '../../payment/wallet.js';
 
 const router = Router();
 
@@ -20,9 +21,11 @@ router.get('/', (req, res) => {
   }
 
   const account = getAccount(wallet);
+  const { depositAddress } = getDepositAddress(wallet);
   res.json({
     ok: true,
     wallet: account.wallet,
+    depositAddress,
     apiKey: account.api_key,
     balance: account.balance_usd,
     totalDeposited: account.total_deposited_usd,

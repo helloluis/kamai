@@ -17,6 +17,8 @@ import healthRouter from './api/routes/health.js';
 import memoriesRouter, { closeMemoriesDb } from './api/routes/memories.js';
 import { shutdown } from './browser/index.js';
 import { closeCreditsDb } from './payment/credits.js';
+import { validateSeed, getMasterAddress } from './payment/wallet.js';
+import { PAYMENT_RECIPIENT } from './payment/config.js';
 
 const PORT = parseInt(process.env.PORT ?? '3100', 10);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -52,6 +54,16 @@ app.get('/skill.md', (_req, res) => {
 app.use((_req, res) => {
   res.status(404).json({ ok: false, error: 'Not found' });
 });
+
+// Validate wallet seed at startup
+if (process.env.WALLET_SEED) {
+  if (PAYMENT_RECIPIENT && !validateSeed(PAYMENT_RECIPIENT)) {
+    console.warn(`[kamai] WARNING: WALLET_SEED master address does not match PAYMENT_RECIPIENT_ADDRESS`);
+    console.warn(`[kamai] Master derived: ${getMasterAddress()}, expected: ${PAYMENT_RECIPIENT}`);
+  } else {
+    console.log(`[kamai] Wallet seed verified — master: ${getMasterAddress()}`);
+  }
+}
 
 // Start
 app.listen(PORT, HOST, () => {
