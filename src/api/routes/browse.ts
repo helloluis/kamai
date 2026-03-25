@@ -3,6 +3,7 @@
  */
 import { Router } from 'express';
 import { browse } from '../../browser/index.js';
+import { getMemoriesForDomain } from './memories.js';
 
 const router = Router();
 
@@ -29,6 +30,14 @@ router.post('/', async (req, res) => {
       console.log(`[Browse] ${ts} | ${callerIp} | OK  ${url} | ${result.length} chars | ${elapsed}ms`);
     } else {
       console.log(`[Browse] ${ts} | ${callerIp} | FAIL ${url} | ${result.error} | ${elapsed}ms`);
+    }
+
+    // Attach domain memories if available
+    if (result.ok) {
+      const memories = getMemoriesForDomain(url);
+      if (memories.length > 0) {
+        (result as any).memories = memories;
+      }
     }
 
     res.json(result);

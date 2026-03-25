@@ -14,6 +14,7 @@ import sessionRouter from './api/routes/session.js';
 import depositRouter from './api/routes/deposit.js';
 import accountRouter from './api/routes/account.js';
 import healthRouter from './api/routes/health.js';
+import memoriesRouter, { closeMemoriesDb } from './api/routes/memories.js';
 import { shutdown } from './browser/index.js';
 import { closeCreditsDb } from './payment/credits.js';
 
@@ -37,6 +38,11 @@ app.use('/api/v1/deposit', rateLimit, depositRouter);
 app.use('/api/v1/browse', rateLimit, creditPayment(), browseRouter);
 app.use('/api/v1/session', rateLimit, sessionRouter);
 
+// Legacy routes — backward compatibility with minai/beanie browse-service
+// These bypass payment (sister apps call directly from their backends)
+app.use('/browse/memories', memoriesRouter);
+app.use('/browse', browseRouter);
+
 // Skill file — downloadable LLM integration spec
 app.get('/skill.md', (_req, res) => {
   res.sendFile('skill.md', { root: '.' });
@@ -58,6 +64,7 @@ app.listen(PORT, HOST, () => {
 const graceful = async () => {
   console.log('[kamai] Shutting down...');
   closeCreditsDb();
+  closeMemoriesDb();
   await shutdown();
   process.exit(0);
 };
