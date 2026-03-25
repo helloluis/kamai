@@ -81,7 +81,7 @@ let globalRequestInFlight = false;
 // ─── Demo section ───
 
 function DemoSection() {
-  const [input, setInput] = useState('https://coinmarketcap.com/currencies/celo/');
+  const [input, setInput] = useState('https://defillama.com/chain/Celo');
   const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -153,7 +153,7 @@ function DemoSection() {
             value={input}
             onChange={(e) => { setInput(e.target.value); setError(''); }}
             onKeyDown={(e) => e.key === 'Enter' && !loading && handleSubmit()}
-            placeholder="https://coinmarketcap.com/currencies/celo/"
+            placeholder="https://defillama.com/chain/Celo"
             className="flex-1 px-4 py-3 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg text-[var(--color-text)] placeholder-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-primary)] transition-colors font-mono text-sm"
             disabled={loading}
           />
