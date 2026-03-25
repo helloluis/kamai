@@ -43,6 +43,9 @@ function isSisterCaller(req: Request): boolean {
   return (apiKey ? SISTER_KEYS.has(apiKey) : false) || (wallet ? SISTER_KEYS.has(wallet) : false);
 }
 
+// Demo wallet — gets free requests (used by the landing page "try it" feature)
+const DEMO_WALLET = '0x0000000000000000000000000000000000000000';
+
 export function creditPayment() {
   return (req: Request, res: Response, next: NextFunction): void => {
     const wallet = getCallerWallet(req);
@@ -52,6 +55,11 @@ export function creditPayment() {
         error: 'Missing identity. Send x-wallet-address or x-api-key header.',
       });
       return;
+    }
+
+    // Demo wallet bypasses payment (rate-limited by the frontend)
+    if (wallet === DEMO_WALLET) {
+      return next();
     }
 
     // Determine pricing
