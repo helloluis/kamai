@@ -9,6 +9,7 @@ import express from 'express';
 import cors from 'cors';
 import { apiKeyAuth } from './api/middleware/auth.js';
 import { rateLimit } from './api/middleware/rate-limit.js';
+import { paymentRequired } from './payment/index.js';
 import browseRouter from './api/routes/browse.js';
 import sessionRouter from './api/routes/session.js';
 import healthRouter from './api/routes/health.js';
@@ -26,8 +27,8 @@ app.use(express.json({ limit: '1mb' }));
 // Public routes
 app.use('/health', healthRouter);
 
-// Protected routes
-app.use('/api/v1/browse', rateLimit, apiKeyAuth, browseRouter);
+// Protected routes — payment required when PAYMENT_RECIPIENT_ADDRESS is set
+app.use('/api/v1/browse', rateLimit, apiKeyAuth, paymentRequired(), browseRouter);
 app.use('/api/v1/session', rateLimit, apiKeyAuth, sessionRouter);
 
 // Skill file — downloadable LLM integration spec
