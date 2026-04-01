@@ -4,8 +4,12 @@
  * Smart routing: checks for domain-specific strategies (yt-dlp, github-api)
  * before falling back to Playwright. Strategies can be set via domain memories.
  *
- * Sessions: pass `sessionId` to reuse a persistent browser context that
- * preserves cookies, auth state, and localStorage between requests.
+ * Auto-sessions: callers are automatically assigned a persistent browser
+ * context based on their identity (x-wallet-address, x-api-key, or IP).
+ * Cookies, auth state, and localStorage persist across requests from the
+ * same caller. Sessions expire after 30 minutes of inactivity.
+ *
+ * Manual sessions: pass `sessionId` explicitly to use a specific session.
  */
 import { Router } from 'express';
 import { browse } from '../../browser/index.js';
@@ -16,8 +20,22 @@ import { SessionManager } from '../../browser/session-manager.js';
 const router = Router();
 export const sessionManager = new SessionManager();
 
+/**
+ * Resolve the caller's identity for auto-session.
+ * Priority: explicit sessionId > x-api-key > x-wallet-address > IP
+ */
+function resolveCallerId(req: any): string {
+  return (
+    (req.headers['x-api-key'] as string) ||
+    (req.headers['x-wallet-address'] as string) ||
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+    req.ip ||
+    'anonymous'
+  );
+}
+
 router.post('/', async (req, res) => {
-  const { url, actions, selector, timeout, sessionId } = req.body;
+  const { url, actions, selector, timeout, sessionId: explicitSessionId } = req.body;
 
   if (!url || typeof url !== 'string') {
     res.status(400).json({ ok: false, error: 'Missing "url" field' });
@@ -25,6 +43,7 @@ router.post('/', async (req, res) => {
   }
 
   const callerIp = (req.headers['x-forwarded-for'] as string) || req.ip;
+  const callerId = resolveCallerId(req);
   const ts = new Date().toISOString();
   const startMs = Date.now();
   const actionSummary = actions?.length ? ` | ${actions.length} actions` : '';
@@ -53,15 +72,37 @@ router.post('/', async (req, res) => {
         console.log(`[Browse] ${ts} | ${callerIp} | STRATEGY FAILED, falling back to Playwright: ${result.error}`);
       }
 
-      // If sessionId provided, reuse persistent browser context
+      // Resolve session: explicit sessionId > auto-session by caller identity
       let sessionContext;
-      if (sessionId) {
-        const session = sessionManager.get(sessionId);
+      let activeSessionId: string | undefined;
+
+      if (explicitSessionId) {
+        // Explicit session
+        const session = sessionManager.get(explicitSessionId);
         if (session) {
           sessionContext = session.context;
-          console.log(`[Browse] ${ts} | ${callerIp} | SESSION ${sessionId}`);
+          activeSessionId = explicitSessionId;
+          console.log(`[Browse] ${ts} | ${callerIp} | SESSION ${explicitSessionId}`);
         } else {
-          console.log(`[Browse] ${ts} | ${callerIp} | SESSION ${sessionId} NOT FOUND, using fresh context`);
+          console.log(`[Browse] ${ts} | ${callerIp} | SESSION ${explicitSessionId} NOT FOUND, creating new`);
+        }
+      }
+
+      if (!sessionContext) {
+        // Auto-session: find or create session for this caller
+        let session = sessionManager.getByUserId(callerId);
+        if (session) {
+          sessionContext = session.context;
+          activeSessionId = session.sessionId;
+          console.log(`[Browse] ${ts} | ${callerIp} | AUTO-SESSION reuse ${activeSessionId} for ${callerId}`);
+        } else {
+          // Create new auto-session
+          activeSessionId = await sessionManager.create(callerId);
+          session = sessionManager.get(activeSessionId);
+          if (session) {
+            sessionContext = session.context;
+            console.log(`[Browse] ${ts} | ${callerIp} | AUTO-SESSION new ${activeSessionId} for ${callerId}`);
+          }
         }
       }
 
@@ -70,7 +111,7 @@ router.post('/', async (req, res) => {
         selector: selector || null,
         timeout: timeout || undefined,
         sessionContext,
-        sessionId,
+        sessionId: activeSessionId,
       });
     }
 

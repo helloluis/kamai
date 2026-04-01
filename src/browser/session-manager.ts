@@ -53,6 +53,21 @@ export class SessionManager {
     return session;
   }
 
+  /** Find an existing session by userId (for auto-session). Returns the most recently active one. */
+  getByUserId(userId: string): BrowserSession | undefined {
+    let best: BrowserSession | undefined;
+    for (const session of this.sessions.values()) {
+      if (session.userId === userId) {
+        session.lastActivity = new Date();
+        session.status = 'active';
+        if (!best || session.lastActivity > best.lastActivity) {
+          best = session;
+        }
+      }
+    }
+    return best;
+  }
+
   async destroy(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (session) {

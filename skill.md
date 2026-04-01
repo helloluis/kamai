@@ -112,9 +112,16 @@ Browse a URL with optional actions.
 | `wait_ms` | `ms` | Wait for N milliseconds (max 5000) |
 | `evaluate` | `text` | Run JavaScript on the page |
 
-## Sessions (Optional)
+## Sessions (Automatic)
 
-For multi-step workflows that need to persist cookies and state:
+**Sessions are automatic.** kamai maintains a persistent browser context per caller — cookies, auth state, and localStorage persist across requests without any extra work from the agent. Your identity (wallet address, API key, or IP) is used to match you to your session.
+
+This means:
+- **Login once**, then subsequent requests to the same site stay logged in
+- No need to pass credentials on every request
+- Sessions expire after **30 minutes** of inactivity
+
+If you need to explicitly manage sessions (e.g. run multiple independent browser contexts), you can still use the session API:
 
 ```
 POST /api/v1/session              → { sessionId: "..." }
@@ -122,7 +129,7 @@ GET  /api/v1/session/:sessionId   → session status
 DELETE /api/v1/session/:sessionId → destroy session
 ```
 
-Pass `sessionId` in your browse request to reuse the same browser context:
+Pass `sessionId` in your browse request to use a specific session:
 ```json
 {
   "url": "https://example.com/step2",
