@@ -76,12 +76,23 @@ export async function browse(
     const page = await context.newPage();
     page.setDefaultTimeout(timeout);
 
+    // Auto-accept JavaScript dialogs (alert, confirm, prompt)
+    // OutSystems and similar frameworks use confirm() for form submissions
+    const dialogLog: string[] = [];
+    page.on('dialog', async (dialog) => {
+      dialogLog.push(`${dialog.type()}: "${dialog.message()}" → accepted`);
+      await dialog.accept();
+    });
+
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
 
       let actionLog: string[] = [];
       if (actions.length > 0) {
         actionLog = await executeActions(page, actions);
+      }
+      if (dialogLog.length > 0) {
+        actionLog.push(...dialogLog);
       }
 
       const extracted = await extractPage(page, selector);
