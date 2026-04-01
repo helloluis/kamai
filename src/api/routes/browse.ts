@@ -3,16 +3,21 @@
  *
  * Smart routing: checks for domain-specific strategies (yt-dlp, github-api)
  * before falling back to Playwright. Strategies can be set via domain memories.
+ *
+ * Sessions: pass `sessionId` to reuse a persistent browser context that
+ * preserves cookies, auth state, and localStorage between requests.
  */
 import { Router } from 'express';
 import { browse } from '../../browser/index.js';
 import { getMemoriesForDomain, getStrategyForDomain } from './memories.js';
 import { resolveStrategy } from '../../browser/strategies/index.js';
+import { SessionManager } from '../../browser/session-manager.js';
 
 const router = Router();
+export const sessionManager = new SessionManager();
 
 router.post('/', async (req, res) => {
-  const { url, actions, selector, timeout } = req.body;
+  const { url, actions, selector, timeout, sessionId } = req.body;
 
   if (!url || typeof url !== 'string') {
     res.status(400).json({ ok: false, error: 'Missing "url" field' });
@@ -47,7 +52,26 @@ router.post('/', async (req, res) => {
       if (result && !result.ok) {
         console.log(`[Browse] ${ts} | ${callerIp} | STRATEGY FAILED, falling back to Playwright: ${result.error}`);
       }
-      result = await browse(url, actions || [], selector || null, timeout || undefined);
+
+      // If sessionId provided, reuse persistent browser context
+      let sessionContext;
+      if (sessionId) {
+        const session = sessionManager.get(sessionId);
+        if (session) {
+          sessionContext = session.context;
+          console.log(`[Browse] ${ts} | ${callerIp} | SESSION ${sessionId}`);
+        } else {
+          console.log(`[Browse] ${ts} | ${callerIp} | SESSION ${sessionId} NOT FOUND, using fresh context`);
+        }
+      }
+
+      result = await browse(url, {
+        actions: actions || [],
+        selector: selector || null,
+        timeout: timeout || undefined,
+        sessionContext,
+        sessionId,
+      });
     }
 
     const elapsed = Date.now() - startMs;

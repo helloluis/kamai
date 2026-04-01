@@ -3,7 +3,7 @@
  * Each session has its own cookies, localStorage, and proxy assignment.
  */
 import { v4 as uuid } from 'uuid';
-import { getBrowser } from './engine.js';
+import { createContext } from './engine.js';
 import type { BrowserContext } from 'playwright';
 
 export interface BrowserSession {
@@ -27,12 +27,8 @@ export class SessionManager {
   }
 
   async create(userId: string): Promise<string> {
-    const browser = await getBrowser();
-    const context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      viewport: { width: 1280, height: 720 },
-    });
+    // Uses createContext which includes stealth scripts
+    const context = await createContext();
 
     const sessionId = uuid();
     this.sessions.set(sessionId, {

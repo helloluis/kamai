@@ -6,15 +6,14 @@
  * DELETE /api/v1/session/:sessionId  — destroy session
  */
 import { Router } from 'express';
-import { SessionManager } from '../../browser/session-manager.js';
+import { sessionManager } from './browse.js';
 
 const router = Router();
-const sessions = new SessionManager();
 
 router.post('/', async (req, res) => {
   try {
-    const userId = (req.headers['x-api-key'] as string) || 'anonymous';
-    const sessionId = await sessions.create(userId);
+    const userId = (req.headers['x-api-key'] as string) || (req.headers['x-wallet-address'] as string) || 'anonymous';
+    const sessionId = await sessionManager.create(userId);
     res.status(201).json({ ok: true, sessionId });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: err.message });
@@ -22,7 +21,7 @@ router.post('/', async (req, res) => {
 });
 
 router.get('/:sessionId', (req, res) => {
-  const session = sessions.get(req.params.sessionId);
+  const session = sessionManager.get(req.params.sessionId);
   if (!session) {
     res.status(404).json({ ok: false, error: 'Session not found' });
     return;
@@ -37,7 +36,7 @@ router.get('/:sessionId', (req, res) => {
 });
 
 router.delete('/:sessionId', async (req, res) => {
-  await sessions.destroy(req.params.sessionId);
+  await sessionManager.destroy(req.params.sessionId);
   res.json({ ok: true, deleted: req.params.sessionId });
 });
 
