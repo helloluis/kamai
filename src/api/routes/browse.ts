@@ -124,19 +124,22 @@ router.post('/', async (req, res) => {
       console.log(`[Browse] ${ts} | ${callerIp} | FAIL ${url} | ${result.error} | ${elapsed}ms`);
     }
 
-    // Attach domain memories if available
-    if (result.ok) {
-      const memories = getMemoriesForDomain(url);
-      if (memories.length > 0) {
-        result.memories = memories;
-      }
+    // Attach domain memories on ALL responses (success or failure)
+    // so the LLM always has tips for retrying
+    const memories = getMemoriesForDomain(url);
+    if (memories.length > 0) {
+      result.memories = memories;
     }
 
     res.json(result);
   } catch (err: any) {
     const elapsed = Date.now() - startMs;
     console.error(`[Browse] ${ts} | ${callerIp} | ERR ${url} | ${err.message} | ${elapsed}ms`);
-    res.status(500).json({ ok: false, error: err.message || 'Browse failed' });
+    // Include memories even in error responses
+    const memories = getMemoriesForDomain(url);
+    const errorResp: any = { ok: false, error: err.message || 'Browse failed' };
+    if (memories.length > 0) errorResp.memories = memories;
+    res.status(500).json(errorResp);
   }
 });
 
