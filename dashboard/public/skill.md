@@ -112,6 +112,7 @@ Browse a URL with optional actions.
 | `wait_ms` | `ms` | Wait for N milliseconds (max 5000) |
 | `scroll_to` | `selector` | Scroll an element into view (centered) |
 | `js_click` | `selector` | Force-click via JavaScript — bypasses overlays, viewport issues, and pointer interception. Use when regular `click` fails. |
+| `set_date` | `selector`, `value` | Set a date on any date picker (native or custom). Value must be `yyyy-mm-dd`. Automatically handles native inputs, Wix/React/MUI calendar popups, and falls back to JS injection. |
 | `evaluate` | `text` | Run JavaScript on the page |
 
 ## Sessions (Automatic)
