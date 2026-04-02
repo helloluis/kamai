@@ -48,6 +48,12 @@ const DEMO_WALLET = '0x0000000000000000000000000000000000000000';
 
 export function creditPayment() {
   return (req: Request, res: Response, next: NextFunction): void => {
+    // Sister apps bypass payment entirely — check FIRST before wallet resolution
+    if (isSisterCaller(req)) {
+      res.setHeader('X-Sister', 'true');
+      return next();
+    }
+
     const wallet = getCallerWallet(req);
     if (!wallet) {
       res.status(401).json({
@@ -59,13 +65,6 @@ export function creditPayment() {
 
     // Demo wallet bypasses payment (rate-limited by the frontend)
     if (wallet === DEMO_WALLET) {
-      return next();
-    }
-
-    // Sister apps bypass payment entirely (identified by x-api-key in SISTER_API_KEYS)
-    const sister = isSisterCaller(req);
-    if (sister) {
-      res.setHeader('X-Sister', 'true');
       return next();
     }
 
@@ -103,15 +102,13 @@ export function creditPayment() {
         if (wasFree) {
           console.log(`[Credits] FREE daily request for ${wallet.slice(0, 10)}... → ${url}`);
         } else if (charged > 0) {
-          const discount = sister ? ' (sister 50% off)' : '';
-          console.log(`[Credits] -$${charged.toFixed(3)}${discount} from ${wallet.slice(0, 10)}... → ${url}`);
+          console.log(`[Credits] -$${charged.toFixed(3)} from ${wallet.slice(0, 10)}... → ${url}`);
         }
       }
     });
 
     // Add pricing info to response headers
     res.setHeader('X-Request-Cost', cost.toFixed(3));
-    if (sister) res.setHeader('X-Sister-Discount', '50%');
 
     next();
   };
