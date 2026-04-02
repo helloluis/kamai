@@ -62,10 +62,16 @@ export function creditPayment() {
       return next();
     }
 
+    // Sister apps bypass payment entirely (identified by x-api-key in SISTER_API_KEYS)
+    const sister = isSisterCaller(req);
+    if (sister) {
+      res.setHeader('X-Sister', 'true');
+      return next();
+    }
+
     // Determine pricing
     const hasActions = Array.isArray(req.body?.actions) && req.body.actions.length > 0;
-    const sister = isSisterCaller(req);
-    const cost = getRequestPrice(hasActions, sister);
+    const cost = getRequestPrice(hasActions, false);
 
     // Check if user can afford it (includes daily freebie check)
     if (!canAfford(wallet, cost)) {
