@@ -110,6 +110,8 @@ Browse a URL with optional actions.
 | `select` | `selector`, `value` | Select an option in a dropdown |
 | `wait` | `selector`, `timeout?` | Wait for an element to appear |
 | `wait_ms` | `ms` | Wait for N milliseconds (max 5000) |
+| `scroll_to` | `selector` | Scroll an element into view (centered) |
+| `js_click` | `selector` | Force-click via JavaScript — bypasses overlays, viewport issues, and pointer interception. Use when regular `click` fails. |
 | `evaluate` | `text` | Run JavaScript on the page |
 
 ## Sessions (Automatic)

@@ -97,6 +97,31 @@ export async function executeActions(page: Page, actions: BrowseAction[]): Promi
           log.push(`waited ${Math.min(ms || 1000, 5000)}ms`);
           break;
 
+        case 'scroll_to':
+          if (!selector) throw new Error('scroll_to requires "selector"');
+          await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, selector);
+          await page.waitForTimeout(500);
+          log.push(`scrolled to ${selector}`);
+          break;
+
+        case 'js_click':
+          // Force-click via JavaScript — bypasses overlays, viewport checks, and pointer interception
+          if (!selector) throw new Error('js_click requires "selector"');
+          await page.evaluate((sel) => {
+            const el = document.querySelector(sel) as HTMLElement;
+            if (!el) throw new Error('Element not found: ' + sel);
+            el.scrollIntoView({ block: 'center' });
+            el.click();
+            el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+          }, selector);
+          await page.waitForTimeout(300);
+          log.push(`js_clicked ${selector}`);
+          break;
+
         default:
           log.push(`unknown action: ${action}`);
       }
