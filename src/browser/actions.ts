@@ -255,46 +255,36 @@ export async function executeActions(page: Page, actions: BrowseAction[]): Promi
       switch (action) {
         case 'type':
           if (!selector || !text) throw new Error('type requires "selector" and "text"');
-          await page.evaluate((sel: string) => {
-            const el = document.querySelector(sel);
-            if (el) el.scrollIntoView({ block: 'center' });
-          }, selector);
-          await dismissOverlays(page);
-          await page.waitForSelector(selector, { timeout: 5000 });
-          await page.fill(selector, text);
+          {
+            const loc = await resolveSelector(page, selector);
+            await loc.scrollIntoViewIfNeeded();
+            await dismissOverlays(page);
+            await loc.fill(text);
+          }
           log.push(`typed "${text}" into ${selector}`);
           break;
 
         case 'click':
           if (!selector) throw new Error('click requires "selector"');
-          await page.waitForSelector(selector, { timeout: 5000 });
-          log.push(await smartClick(page, selector));
+          log.push(await smartClickResolved(page, selector));
           await page.waitForTimeout(500);
           break;
 
         case 'click_and_wait':
           if (!selector) throw new Error('click_and_wait requires "selector"');
-          await page.waitForSelector(selector, { timeout: 5000 });
-          // Scroll + dismiss overlays first
-          await page.evaluate((sel: string) => {
-            const el = document.querySelector(sel);
-            if (el) el.scrollIntoView({ behavior: 'instant', block: 'center' });
-          }, selector);
-          await dismissOverlays(page);
-          try {
-            await Promise.all([
-              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: waitTimeout || 10000 }),
-              page.click(selector).catch(() =>
-                // Fallback to JS click for navigation
-                page.evaluate((sel: string) => {
-                  const el = document.querySelector(sel) as HTMLElement;
-                  if (el) el.click();
-                }, selector)
-              ),
-            ]);
-            log.push(`clicked ${selector} → navigated to ${page.url()}`);
-          } catch (navErr: any) {
-            log.push(`clicked ${selector} (no navigation: ${navErr.message})`);
+          {
+            const loc = await resolveSelector(page, selector);
+            await loc.scrollIntoViewIfNeeded();
+            await dismissOverlays(page);
+            try {
+              await Promise.all([
+                page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: waitTimeout || 10000 }),
+                loc.click().catch(() => loc.evaluate((el: any) => el.click())),
+              ]);
+              log.push(`clicked ${selector} → navigated to ${page.url()}`);
+            } catch (navErr: any) {
+              log.push(`clicked ${selector} (no navigation: ${navErr.message})`);
+            }
           }
           break;
 
@@ -329,19 +319,18 @@ export async function executeActions(page: Page, actions: BrowseAction[]): Promi
 
         case 'select':
           if (!selector || value === undefined) throw new Error('select requires "selector" and "value"');
-          await page.evaluate((sel: string) => {
-            const el = document.querySelector(sel);
-            if (el) el.scrollIntoView({ block: 'center' });
-          }, selector);
-          await dismissOverlays(page);
-          await page.waitForSelector(selector, { timeout: 5000 });
-          await page.selectOption(selector, value);
+          {
+            const loc = await resolveSelector(page, selector);
+            await loc.scrollIntoViewIfNeeded();
+            await dismissOverlays(page);
+            await loc.selectOption(value);
+          }
           log.push(`selected "${value}" in ${selector}`);
           break;
 
         case 'wait':
           if (!selector) throw new Error('wait requires "selector"');
-          await page.waitForSelector(selector, { timeout: waitTimeout || 10000 });
+          await resolveSelector(page, selector, waitTimeout || 10000);
           log.push(`found ${selector}`);
           break;
 
