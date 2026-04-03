@@ -17,6 +17,45 @@ export interface BrowseAction {
 
 const MAX_ACTIONS = 20;
 
+// ─── Playwright text selector support ───
+// Resolve "text=..." selectors to Playwright locators
+function isTextSelector(sel: string): boolean {
+  return sel.startsWith('text=') || sel.startsWith('text/');
+}
+
+async function resolveSelector(page: Page, sel: string, timeout: number = 5000) {
+  if (isTextSelector(sel)) {
+    const text = sel.replace(/^text[=/]/, '');
+    const locator = page.getByText(text, { exact: false });
+    await locator.waitFor({ timeout });
+    return locator;
+  }
+  await page.waitForSelector(sel, { timeout });
+  return page.locator(sel).first();
+}
+
+async function smartClickResolved(page: Page, selector: string, timeout: number = 5000): Promise<string> {
+  if (isTextSelector(selector)) {
+    const text = selector.replace(/^text[=/]/, '');
+    const locator = page.getByText(text, { exact: false });
+    await locator.scrollIntoViewIfNeeded();
+    await dismissOverlays(page);
+    try {
+      await locator.click({ timeout });
+      return "clicked " + selector;
+    } catch {
+      await locator.evaluate((el: any) => {
+        el.click();
+        el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      });
+      return "clicked " + selector + " (via JS fallback)";
+    }
+  }
+  return smartClick(page, selector, timeout);
+}
+
+
 // ─── Overlay dismissal ───
 
 const OVERLAY_SELECTORS = [
