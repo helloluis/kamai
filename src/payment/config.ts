@@ -52,6 +52,9 @@ export function usdcUnitsToUsd(units: bigint): string {
   return (Number(units) / 10 ** USDC_DECIMALS).toFixed(USDC_DECIMALS);
 }
 
+/** Brochure PDF generation */
+export const PRICE_BROCHURE = 0.05;
+
 /** Get the price for a request based on whether it has actions */
 export function getRequestPrice(hasActions: boolean, isSister: boolean): number {
   const base = hasActions ? PRICE_ACTIONS : PRICE_BROWSE;

@@ -15,8 +15,11 @@ import depositRouter from './api/routes/deposit.js';
 import accountRouter from './api/routes/account.js';
 import healthRouter from './api/routes/health.js';
 import memoriesRouter, { closeMemoriesDb } from './api/routes/memories.js';
+import brochureRouter from './api/routes/brochure.js';
 import { shutdown } from './browser/index.js';
 import { closeCreditsDb } from './payment/credits.js';
+import { cleanupExpired, closeBrochureDb } from './brochure/index.js';
+import { PRICE_BROCHURE } from './payment/config.js';
 import { getMasterAddress } from './payment/wallet.js';
 import { PAYMENT_RECIPIENT } from './payment/config.js';
 
@@ -38,6 +41,7 @@ app.use('/api/v1/deposit', rateLimit, depositRouter);
 
 // Protected routes — credit-based payment (identity via wallet or API key)
 app.use('/api/v1/browse', rateLimit, creditPayment(), browseRouter);
+app.use('/api/v1/brochure', express.json({ limit: '10mb' }), rateLimit, creditPayment(PRICE_BROCHURE), brochureRouter);
 app.use('/api/v1/session', rateLimit, sessionRouter);
 
 // Legacy routes — backward compatibility with minai/beanie browse-service
@@ -64,18 +68,25 @@ if (process.env.WALLET_SEED) {
   }
 }
 
+// Brochure cleanup — every hour, delete expired PDFs
+const CLEANUP_INTERVAL = 60 * 60 * 1000;
+const cleanupTimer = setInterval(cleanupExpired, CLEANUP_INTERVAL);
+cleanupExpired(); // run once at startup
+
 // Start
 app.listen(PORT, HOST, () => {
   console.log(`[kamai] API server listening on ${HOST}:${PORT}`);
-  console.log(`[kamai] Pricing: $0.009/browse, $0.013/actions (first daily request free)`);
+  console.log(`[kamai] Pricing: $0.009/browse, $0.013/actions, $${PRICE_BROCHURE}/brochure`);
   console.log(`[kamai] Docs: /skill.md  Health: /health`);
 });
 
 // Graceful shutdown
 const graceful = async () => {
   console.log('[kamai] Shutting down...');
+  clearInterval(cleanupTimer);
   closeCreditsDb();
   closeMemoriesDb();
+  closeBrochureDb();
   await shutdown();
   process.exit(0);
 };

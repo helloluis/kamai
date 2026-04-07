@@ -6,3 +6,4 @@ dist/
 .env
 .env.local
 dashboard/.next/
+data/

@@ -35,6 +35,7 @@ API keys are **optional**. A wallet address works on its own. Keys are useful wh
 |-------------|------|
 | Page load (no actions) | $0.009 |
 | Page load with actions | $0.013 |
+| Brochure PDF generation | $0.050 |
 
 - **First request each day is free** (per account)
 - **Minimum deposit:** $0.10 USDC on Celo
@@ -169,6 +170,185 @@ Common errors:
 - `Navigation timeout` — page took too long to load
 - `Insufficient credits` — deposit USDC to continue
 - `type requires "selector" and "text"` — missing action parameters
+
+---
+
+## PDF Brochure Generation
+
+Generate beautiful multi-page corporate PDFs from structured content. Supports iterative refinement — update an existing brochure without regenerating from scratch.
+
+### Pricing
+
+| Request type | Cost |
+|-------------|------|
+| Generate or update a brochure | $0.05 |
+| Download a brochure | Free |
+
+Sister apps (minai, registered partners) use this for free.
+
+### GET /api/v1/brochure/templates
+
+List available templates with their required and optional fields.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "templates": [
+    {
+      "id": "corporate-overview",
+      "name": "Corporate Overview",
+      "description": "Cover page + content sections + contact back page",
+      "requiredFields": ["title", "sections"],
+      "optionalFields": ["subtitle", "brandColor", "coverImage", "logo", "contactInfo", "footer", "charts"]
+    }
+  ]
+}
+```
+
+### POST /api/v1/brochure/generate
+
+Create a new brochure PDF.
+
+**Request:**
+```json
+{
+  "template": "corporate-overview",
+  "content": {
+    "title": "Acme Corp — Company Overview",
+    "subtitle": "Innovation Since 1999",
+    "brandColor": "#1a3b5c",
+    "coverImage": "https://example.com/hero.jpg",
+    "logo": "https://example.com/logo.png",
+    "sections": [
+      {
+        "heading": "Our Mission",
+        "body": "We build things that matter...",
+        "image": "https://example.com/team.jpg",
+        "imageCaption": "The Acme team at HQ"
+      },
+      {
+        "heading": "Key Metrics",
+        "body": "Our growth over the past year..."
+      }
+    ],
+    "charts": [
+      {
+        "type": "bar",
+        "title": "Revenue by Quarter",
+        "labels": ["Q1", "Q2", "Q3", "Q4"],
+        "values": [120, 180, 210, 350]
+      }
+    ],
+    "contactInfo": {
+      "companyName": "Acme Corp",
+      "email": "info@acme.com",
+      "phone": "+1-555-0100",
+      "website": "https://acme.com",
+      "address": "123 Innovation Ave, San Francisco, CA"
+    },
+    "footer": "© 2026 Acme Corp. All rights reserved."
+  },
+  "options": {
+    "pageSize": "A4",
+    "expiresIn": "30d"
+  }
+}
+```
+
+**Content fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `title` | string (required) | Main title / company name |
+| `subtitle` | string | Tagline or subtitle |
+| `brandColor` | string | Hex color (default `#1a3b5c`) |
+| `accentColor` | string | Secondary hex color (auto-derived if omitted) |
+| `coverImage` | string | URL or base64 data URI for cover background |
+| `logo` | string | URL or base64 for company logo |
+| `sections` | array | Content sections (corporate-overview template) |
+| `sections[].heading` | string | Section heading |
+| `sections[].body` | string | Section body text |
+| `sections[].image` | string | URL or base64 for section image |
+| `sections[].imageCaption` | string | Caption below the image |
+| `products` | array | Product items (product-showcase template) |
+| `products[].name` | string | Product name |
+| `products[].description` | string | Product description |
+| `products[].image` | string | Product image URL or base64 |
+| `products[].price` | string | Display price (e.g. "$99.99") |
+| `products[].specs` | object | Key-value spec pairs |
+| `event` | object | Event details (event-invitation template) |
+| `event.name` | string | Event name |
+| `event.date` | string | Event date |
+| `event.time` | string | Event time |
+| `event.location` | string | Venue |
+| `event.description` | string | Event description |
+| `event.speakers` | array | Speaker bios with name, title, image, bio |
+| `event.rsvpUrl` | string | Registration URL |
+| `event.rsvpEmail` | string | RSVP email address |
+| `charts` | array | Bar charts to embed in the brochure |
+| `charts[].type` | string | `"bar"` (more types coming) |
+| `charts[].title` | string | Chart title |
+| `charts[].labels` | string[] | Category labels |
+| `charts[].values` | number[] | Data values |
+| `charts[].colors` | string[] | Custom bar colors (optional) |
+| `contactInfo` | object | Contact details for back page |
+| `footer` | string | Footer text on content pages |
+
+**Options:**
+
+| Option | Values | Default |
+|--------|--------|---------|
+| `pageSize` | `"A4"`, `"LETTER"` | `"A4"` |
+| `expiresIn` | `"7d"`, `"14d"`, `"30d"` | `"30d"` |
+
+**Response:**
+```json
+{
+  "ok": true,
+  "brochureId": "a1b2c3d4-...",
+  "downloadUrl": "/api/v1/brochure/a1b2c3d4-.../download",
+  "pageCount": 4,
+  "sizeBytes": 245000,
+  "expiresAt": "2026-05-07T12:00:00.000Z",
+  "template": "corporate-overview"
+}
+```
+
+### PATCH /api/v1/brochure/:id
+
+Update an existing brochure. Send only the fields you want to change — they are merged into the original content and re-rendered.
+
+**Request:**
+```json
+{
+  "content": {
+    "subtitle": "Updated Tagline",
+    "sections": [
+      { "heading": "Our NEW Mission", "body": "Updated copy..." },
+      { "heading": "Key Metrics", "body": "Even better numbers..." }
+    ]
+  }
+}
+```
+
+**Response:** Same shape as generate.
+
+> **Note:** Arrays (`sections`, `products`, `charts`) are replaced entirely, not merged element-by-element. Send the full array with your changes.
+
+### GET /api/v1/brochure/:id/download
+
+Download the generated PDF. No authentication or credit charge required.
+
+Returns `Content-Type: application/pdf`.
+
+### Templates
+
+| ID | Best for | Required fields |
+|----|----------|----------------|
+| `corporate-overview` | Company decks, proposals, annual summaries | `title`, `sections` |
+| `product-showcase` | Product catalogs, menus, portfolios | `title`, `products` |
+| `event-invitation` | Conferences, workshops, launches | `title`, `event` |
 
 ## Rate Limits
 

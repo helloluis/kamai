@@ -46,7 +46,7 @@ function isSisterCaller(req: Request): boolean {
 // Demo wallet — gets free requests (used by the landing page "try it" feature)
 const DEMO_WALLET = '0x0000000000000000000000000000000000000000';
 
-export function creditPayment() {
+export function creditPayment(costOverride?: number) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Sister apps bypass payment entirely — check FIRST before wallet resolution
     if (isSisterCaller(req)) {
@@ -69,8 +69,8 @@ export function creditPayment() {
     }
 
     // Determine pricing
-    const hasActions = Array.isArray(req.body?.actions) && req.body.actions.length > 0;
-    const cost = getRequestPrice(hasActions, false);
+    const cost = costOverride ??
+      getRequestPrice(Array.isArray(req.body?.actions) && req.body.actions.length > 0, false);
 
     // Check if user can afford it (includes daily freebie check)
     if (!canAfford(wallet, cost)) {
@@ -98,6 +98,7 @@ export function creditPayment() {
 
     res.on('finish', () => {
       if (res.statusCode >= 200 && res.statusCode < 300) {
+        const hasActions = Array.isArray(req.body?.actions) && req.body.actions.length > 0;
         const { charged, wasFree } = chargeRequest(wallet, url, cost, hasActions);
         if (wasFree) {
           console.log(`[Credits] FREE daily request for ${wallet.slice(0, 10)}... → ${url}`);
