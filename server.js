@@ -1,3 +1,4 @@
+import "dotenv/config";
 /**
  * Browse Service — Playwright + Chromium + Domain Memories + MCP + OpenAI Tools
  *
