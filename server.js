@@ -913,7 +913,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── POST /browse ──
-  if (req.method === 'POST' && path === '/browse') {
+  if (req.method === 'POST' && (path === '/browse' || path === '/api/v1/browse')) {
     const body = await readBody(req);
     let data;
     try { data = JSON.parse(body); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON' }); }
