@@ -39,23 +39,23 @@ import "dotenv/config";
  *   Set BRAVE_API_KEY in env to enable the web_search tool.
  */
 
-import http from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
-import Database from 'better-sqlite3';
+import http from "node:http";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { chromium } from "playwright";
+import Database from "better-sqlite3";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const PORT = parseInt(process.env.PORT ?? '3100', 10);
-const MAX_TEXT_LENGTH = parseInt(process.env.MAX_TEXT_LENGTH ?? '30000', 10);
-const DEFAULT_TIMEOUT = parseInt(process.env.DEFAULT_TIMEOUT ?? '15000', 10);
+const PORT = parseInt(process.env.PORT ?? "3100", 10);
+const MAX_TEXT_LENGTH = parseInt(process.env.MAX_TEXT_LENGTH ?? "30000", 10);
+const DEFAULT_TIMEOUT = parseInt(process.env.DEFAULT_TIMEOUT ?? "15000", 10);
 const MAX_ACTIONS = 20;
 
 // ─── SQLite: Domain Memories ───
 
-const db = new Database(join(__dirname, 'browse_memories.db'));
-db.pragma('journal_mode = WAL');
+const db = new Database(join(__dirname, "browse_memories.db"));
+db.pragma("journal_mode = WAL");
 db.exec(`
   CREATE TABLE IF NOT EXISTS browse_page_memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,14 +67,24 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_browse_memories_domain ON browse_page_memories (domain);
 `);
 
-const stmtGetMemories = db.prepare('SELECT id, domain, learning, created_at FROM browse_page_memories WHERE domain = ? ORDER BY created_at ASC');
-const stmtInsertMemory = db.prepare('INSERT INTO browse_page_memories (domain, learning) VALUES (?, ?)');
-const stmtAllMemories = db.prepare('SELECT id, domain, learning, created_at FROM browse_page_memories ORDER BY domain, created_at ASC');
-const stmtDeleteMemory = db.prepare('DELETE FROM browse_page_memories WHERE id = ?');
+const stmtGetMemories = db.prepare(
+  "SELECT id, domain, learning, created_at FROM browse_page_memories WHERE domain = ? ORDER BY created_at ASC",
+);
+const stmtInsertMemory = db.prepare(
+  "INSERT INTO browse_page_memories (domain, learning) VALUES (?, ?)",
+);
+const stmtAllMemories = db.prepare(
+  "SELECT id, domain, learning, created_at FROM browse_page_memories ORDER BY domain, created_at ASC",
+);
+const stmtDeleteMemory = db.prepare(
+  "DELETE FROM browse_page_memories WHERE id = ?",
+);
 
 function extractDomain(url) {
   try {
-    return new URL(url.startsWith('http') ? url : 'https://' + url).hostname.replace(/^www\./, '');
+    return new URL(
+      url.startsWith("http") ? url : "https://" + url,
+    ).hostname.replace(/^www\./, "");
   } catch {
     return null;
   }
@@ -90,23 +100,23 @@ let browser = null;
 
 async function getBrowser() {
   if (browser && browser.isConnected()) return browser;
-  console.log('[Browse] Launching Chromium...');
+  console.log("[Browse] Launching Chromium...");
   browser = await chromium.launch({
     headless: true,
     args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--disable-extensions',
-      '--disable-background-networking',
-      '--disable-default-apps',
-      '--disable-sync',
-      '--no-first-run',
-      '--disable-blink-features=AutomationControlled',
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--disable-extensions",
+      "--disable-background-networking",
+      "--disable-default-apps",
+      "--disable-sync",
+      "--no-first-run",
+      "--disable-blink-features=AutomationControlled",
     ],
   });
-  console.log('[Browse] Chromium ready');
+  console.log("[Browse] Chromium ready");
   return browser;
 }
 
@@ -126,14 +136,15 @@ async function executeActions(page, actions) {
     const { action, selector, text, value, timeout: waitTimeout, ms } = step;
     try {
       switch (action) {
-        case 'type':
-          if (!selector || !text) throw new Error('type requires "selector" and "text"');
+        case "type":
+          if (!selector || !text)
+            throw new Error('type requires "selector" and "text"');
           await page.waitForSelector(selector, { timeout: 5000 });
           await page.fill(selector, text);
           log.push(`typed "${text}" into ${selector}`);
           break;
 
-        case 'click':
+        case "click":
           if (!selector) throw new Error('click requires "selector"');
           await page.waitForSelector(selector, { timeout: 5000 });
           await page.click(selector);
@@ -141,12 +152,15 @@ async function executeActions(page, actions) {
           log.push(`clicked ${selector}`);
           break;
 
-        case 'click_and_wait':
+        case "click_and_wait":
           if (!selector) throw new Error('click_and_wait requires "selector"');
           await page.waitForSelector(selector, { timeout: 5000 });
           try {
             await Promise.all([
-              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: waitTimeout || 10000 }),
+              page.waitForNavigation({
+                waitUntil: "domcontentloaded",
+                timeout: waitTimeout || 10000,
+              }),
               page.click(selector),
             ]);
             log.push(`clicked ${selector} → navigated to ${page.url()}`);
@@ -155,26 +169,32 @@ async function executeActions(page, actions) {
           }
           break;
 
-        case 'submit':
+        case "submit":
           try {
-            const formSelector = selector || 'form';
+            const formSelector = selector || "form";
             await page.waitForSelector(formSelector, { timeout: 5000 });
             await Promise.all([
-              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: waitTimeout || 10000 }),
+              page.waitForNavigation({
+                waitUntil: "domcontentloaded",
+                timeout: waitTimeout || 10000,
+              }),
               page.evaluate((sel) => {
                 const form = document.querySelector(sel);
                 if (form && form.submit) form.submit();
-                else throw new Error('Form not found: ' + sel);
+                else throw new Error("Form not found: " + sel);
               }, formSelector),
             ]);
             log.push(`submitted ${formSelector} → ${page.url()}`);
           } catch (submitErr) {
-            log.push(`submit ${selector || 'form'} failed: ${submitErr.message}`);
+            log.push(
+              `submit ${selector || "form"} failed: ${submitErr.message}`,
+            );
           }
           break;
 
-        case 'evaluate':
-          if (!text) throw new Error('evaluate requires "text" (the JS expression)');
+        case "evaluate":
+          if (!text)
+            throw new Error('evaluate requires "text" (the JS expression)');
           try {
             const evalResult = await page.evaluate(text);
             log.push(`eval: ${JSON.stringify(evalResult)}`.slice(0, 200));
@@ -183,20 +203,23 @@ async function executeActions(page, actions) {
           }
           break;
 
-        case 'select':
-          if (!selector || value === undefined) throw new Error('select requires "selector" and "value"');
+        case "select":
+          if (!selector || value === undefined)
+            throw new Error('select requires "selector" and "value"');
           await page.waitForSelector(selector, { timeout: 5000 });
           await page.selectOption(selector, value);
           log.push(`selected "${value}" in ${selector}`);
           break;
 
-        case 'wait':
+        case "wait":
           if (!selector) throw new Error('wait requires "selector"');
-          await page.waitForSelector(selector, { timeout: waitTimeout || 10000 });
+          await page.waitForSelector(selector, {
+            timeout: waitTimeout || 10000,
+          });
           log.push(`found ${selector}`);
           break;
 
-        case 'wait_ms':
+        case "wait_ms":
           await page.waitForTimeout(Math.min(ms || 1000, 5000));
           log.push(`waited ${Math.min(ms || 1000, 5000)}ms`);
           break;
@@ -205,7 +228,7 @@ async function executeActions(page, actions) {
           log.push(`unknown action: ${action}`);
       }
     } catch (err) {
-      log.push(`${action} ${selector || ''} failed: ${err.message}`);
+      log.push(`${action} ${selector || ""} failed: ${err.message}`);
     }
   }
   return log;
@@ -218,58 +241,92 @@ async function extractPage(page, selector) {
   if (selector) {
     try {
       await page.waitForSelector(selector, { timeout: 5000 });
-      text = await page.$eval(selector, (el) => el.innerText || el.textContent || '');
+      text = await page.$eval(
+        selector,
+        (el) => el.innerText || el.textContent || "",
+      );
     } catch {
-      text = await page.evaluate(() => document.body?.innerText || document.body?.textContent || '');
+      text = await page.evaluate(
+        () => document.body?.innerText || document.body?.textContent || "",
+      );
     }
   } else {
-    text = await page.evaluate(() => document.body?.innerText || document.body?.textContent || '');
+    text = await page.evaluate(
+      () => document.body?.innerText || document.body?.textContent || "",
+    );
   }
 
-  const title = await page.title().catch(() => '');
+  const title = await page.title().catch(() => "");
 
-  const links = await page.evaluate(() => {
-    return Array.from(document.querySelectorAll('a[href]'))
-      .slice(0, 50)
-      .map((a) => ({ text: (a.textContent || '').trim().slice(0, 100), href: a.href }))
-      .filter((l) => l.href && l.text);
-  }).catch(() => []);
+  const links = await page
+    .evaluate(() => {
+      return Array.from(document.querySelectorAll("a[href]"))
+        .slice(0, 50)
+        .map((a) => ({
+          text: (a.textContent || "").trim().slice(0, 100),
+          href: a.href,
+        }))
+        .filter((l) => l.href && l.text);
+    })
+    .catch(() => []);
 
-  const forms = await page.evaluate(() => {
-    const inputs = Array.from(document.querySelectorAll('input, textarea, select, button[type="submit"], input[type="submit"]'));
-    return inputs.slice(0, 40).map((el) => {
-      const tag = el.tagName.toLowerCase();
-      const type = el.getAttribute('type') || '';
-      const name = el.getAttribute('name') || '';
-      const id = el.getAttribute('id') || '';
-      const placeholder = el.getAttribute('placeholder') || '';
-      const label = id ? document.querySelector(`label[for="${id}"]`)?.textContent?.trim() : '';
-      const value = (tag === 'select')
-        ? Array.from(el.options || []).map((o) => `${o.value}:${o.text.trim()}`).join(', ')
-        : '';
-      const selectorParts = [];
-      if (id) selectorParts.push(`#${id}`);
-      else if (name) selectorParts.push(`${tag}[name="${name}"]`);
-      else selectorParts.push(tag);
-      return {
-        tag,
-        type: type || undefined,
-        name: name || undefined,
-        id: id || undefined,
-        placeholder: placeholder || undefined,
-        label: label || undefined,
-        value: value || undefined,
-        selector: selectorParts[0],
-      };
-    }).filter((f) => f.type !== 'hidden');
-  }).catch(() => []);
+  const forms = await page
+    .evaluate(() => {
+      const inputs = Array.from(
+        document.querySelectorAll(
+          'input, textarea, select, button[type="submit"], input[type="submit"]',
+        ),
+      );
+      return inputs
+        .slice(0, 40)
+        .map((el) => {
+          const tag = el.tagName.toLowerCase();
+          const type = el.getAttribute("type") || "";
+          const name = el.getAttribute("name") || "";
+          const id = el.getAttribute("id") || "";
+          const placeholder = el.getAttribute("placeholder") || "";
+          const label = id
+            ? document.querySelector(`label[for="${id}"]`)?.textContent?.trim()
+            : "";
+          const value =
+            tag === "select"
+              ? Array.from(el.options || [])
+                  .map((o) => `${o.value}:${o.text.trim()}`)
+                  .join(", ")
+              : "";
+          const selectorParts = [];
+          if (id) selectorParts.push(`#${id}`);
+          else if (name) selectorParts.push(`${tag}[name="${name}"]`);
+          else selectorParts.push(tag);
+          return {
+            tag,
+            type: type || undefined,
+            name: name || undefined,
+            id: id || undefined,
+            placeholder: placeholder || undefined,
+            label: label || undefined,
+            value: value || undefined,
+            selector: selectorParts[0],
+          };
+        })
+        .filter((f) => f.type !== "hidden");
+    })
+    .catch(() => []);
 
-  const trimmed = (text || '').trim();
-  const truncated = trimmed.length > MAX_TEXT_LENGTH
-    ? trimmed.slice(0, MAX_TEXT_LENGTH) + `\n\n[Truncated — ${trimmed.length} chars total]`
-    : trimmed;
+  const trimmed = (text || "").trim();
+  const truncated =
+    trimmed.length > MAX_TEXT_LENGTH
+      ? trimmed.slice(0, MAX_TEXT_LENGTH) +
+        `\n\n[Truncated — ${trimmed.length} chars total]`
+      : trimmed;
 
-  return { title, text: truncated, links: links.slice(0, 30), forms, length: trimmed.length };
+  return {
+    title,
+    text: truncated,
+    links: links.slice(0, 30),
+    forms,
+    length: trimmed.length,
+  };
 }
 
 // ─── Browse logic ───
@@ -282,7 +339,7 @@ async function browse(url, actions, selector, timeout) {
   }
 
   if (!/^https?:\/\//i.test(url)) {
-    url = 'https://' + url;
+    url = "https://" + url;
   }
 
   const STEALTH_SCRIPTS = `
@@ -303,12 +360,13 @@ async function browse(url, actions, selector, timeout) {
 
   const b = await getBrowser();
   const context = await b.newContext({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     viewport: { width: 1920, height: 1080 },
-    locale: 'en-US',
-    timezoneId: 'Asia/Manila',
+    locale: "en-US",
+    timezoneId: "Asia/Manila",
     extraHTTPHeaders: {
-      'Accept-Language': 'en-US,en;q=0.9',
+      "Accept-Language": "en-US,en;q=0.9",
     },
   });
 
@@ -319,7 +377,7 @@ async function browse(url, actions, selector, timeout) {
     page.setDefaultTimeout(timeout);
 
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout });
 
       let actionLog = [];
       if (actions && actions.length > 0) {
@@ -337,7 +395,8 @@ async function browse(url, actions, selector, timeout) {
         url: page.url(),
         ...extracted,
         actions_performed: actionLog.length > 0 ? actionLog : undefined,
-        memories: memories.length > 0 ? memories.map((m) => m.learning) : undefined,
+        memories:
+          memories.length > 0 ? memories.map((m) => m.learning) : undefined,
       };
     } finally {
       await page.close().catch(() => {});
@@ -350,57 +409,91 @@ async function browse(url, actions, selector, timeout) {
 // ─── Tool definitions ───
 
 const TOOL_BROWSE_PAGE = {
-  name: 'browse_page',
-  description: 'Browse a URL using a headless Chromium browser. Returns the page text, title, links, and form fields. Optionally performs interactions (click, type, select, evaluate JS, etc.) before extracting content. Use this to read web pages, fill forms, or navigate dynamic sites.',
+  name: "browse_page",
+  description:
+    "Browse a URL using a headless Chromium browser. Returns the page text, title, links, and form fields. Optionally performs interactions (click, type, select, evaluate JS, etc.) before extracting content. Use this to read web pages, fill forms, or navigate dynamic sites.",
   inputSchema: {
-    type: 'object',
+    type: "object",
     properties: {
       url: {
-        type: 'string',
-        description: 'URL to browse (must begin with http:// or https://)',
+        type: "string",
+        description: "URL to browse (must begin with http:// or https://)",
       },
       actions: {
-        type: 'array',
-        description: 'Ordered list of interactions to perform on the page before extracting content',
+        type: "array",
+        description:
+          "Ordered list of interactions to perform on the page before extracting content",
         items: {
-          type: 'object',
+          type: "object",
           properties: {
             action: {
-              type: 'string',
-              enum: ['type', 'click', 'click_and_wait', 'submit', 'evaluate', 'select', 'wait', 'wait_ms'],
-              description: 'Action type',
+              type: "string",
+              enum: [
+                "type",
+                "click",
+                "click_and_wait",
+                "submit",
+                "evaluate",
+                "select",
+                "wait",
+                "wait_ms",
+              ],
+              description: "Action type",
             },
-            selector: { type: 'string', description: 'CSS selector for the target element' },
-            text: { type: 'string', description: 'Text to type (for "type") or JS expression (for "evaluate")' },
-            value: { type: 'string', description: 'Option value to select (for "select")' },
-            ms: { type: 'number', description: 'Milliseconds to wait (for "wait_ms", max 5000)' },
+            selector: {
+              type: "string",
+              description: "CSS selector for the target element",
+            },
+            text: {
+              type: "string",
+              description:
+                'Text to type (for "type") or JS expression (for "evaluate")',
+            },
+            value: {
+              type: "string",
+              description: 'Option value to select (for "select")',
+            },
+            ms: {
+              type: "number",
+              description: 'Milliseconds to wait (for "wait_ms", max 5000)',
+            },
           },
-          required: ['action'],
+          required: ["action"],
         },
       },
       selector: {
-        type: 'string',
-        description: 'CSS selector to extract only a specific section of the page instead of the full body',
+        type: "string",
+        description:
+          "CSS selector to extract only a specific section of the page instead of the full body",
       },
       timeout: {
-        type: 'number',
-        description: 'Navigation timeout in milliseconds (default 15000)',
+        type: "number",
+        description: "Navigation timeout in milliseconds (default 15000)",
       },
     },
-    required: ['url'],
+    required: ["url"],
   },
 };
 
 const TOOL_WEB_SEARCH = {
-  name: 'web_search',
-  description: 'Search the web using Brave Search. Returns relevant results with titles, URLs, and content excerpts. Prefer this over browse_page when you need to find information across multiple sources.',
+  name: "web_search",
+  description:
+    "Search the web using Brave Search, or target specific sites (e.g. reddit.com, wikipedia.org) for structured results. Returns relevant results with titles, URLs, and content excerpts. Prefer this over browse_page when you need to find information across multiple sources.",
   inputSchema: {
-    type: 'object',
+    type: "object",
     properties: {
-      query: { type: 'string', description: 'Search query' },
-      count: { type: 'number', description: 'Number of results to return (default 5, max 10)' },
+      query: { type: "string", description: "Search query" },
+      count: {
+        type: "number",
+        description: "Number of results to return (default 5, max 20)",
+      },
+      site: {
+        type: "string",
+        description:
+          'Target a specific domain. Supported: "reddit.com" (Reddit API if creds set, else Brave), "wikipedia.org" (free MediaWiki API), "medium.com" (Brave site: search), "linkedin.com" (Brave site: search). Also accepts prefixes: "reddit:", "wiki:", "medium:", "linkedin:", "li:". If omitted, searches the full web via Brave.',
+      },
     },
-    required: ['query'],
+    required: ["query"],
   },
 };
 
@@ -410,61 +503,342 @@ function getTools() {
     : [TOOL_BROWSE_PAGE];
 }
 
+// ─── Reddit Search (OAuth API) ───
+
+let redditToken = null;
+let redditTokenExpiry = 0;
+
+async function getRedditToken() {
+  if (redditToken && Date.now() < redditTokenExpiry) return redditToken;
+
+  const clientId = process.env.REDDIT_CLIENT_ID;
+  const clientSecret = process.env.REDDIT_CLIENT_SECRET;
+  if (!clientId || !clientSecret)
+    throw new Error(
+      "Reddit search requires REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET in env",
+    );
+
+  const r = await fetch("https://www.reddit.com/api/v1/access_token", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ grant_type: "client_credentials" }),
+  });
+  if (!r.ok) throw new Error(`Reddit auth failed: ${r.status} ${r.statusText}`);
+  const data = await r.json();
+  redditToken = data.access_token;
+  redditTokenExpiry = Date.now() + (data.expires_in - 60) * 1000; // refresh 60s early
+  return redditToken;
+}
+
+async function redditSearch(query, count = 5) {
+  const token = await getRedditToken();
+  const n = Math.min(count, 25); // Reddit allows up to 100, but keep reasonable
+
+  const r = await fetch(
+    `https://oauth.reddit.com/search?q=${encodeURIComponent(query)}&sort=relevance&limit=${n}&type=link`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "User-Agent": `kamai:research-agent:v0.1.0 (by /u/${process.env.REDDIT_USERNAME || "kamai_dev"})`,
+      },
+    },
+  );
+  if (!r.ok)
+    throw new Error(`Reddit search failed: ${r.status} ${r.statusText}`);
+
+  const data = await r.json();
+  const posts = data.data?.children || [];
+  if (!posts.length) return "No Reddit results found.";
+
+  return posts
+    .map((child, i) => {
+      const p = child.data;
+      const subreddit = p.subreddit_name_prefixed || p.subreddit;
+      const score = p.score != null ? ` ⬆${p.score}` : "";
+      const comments = p.num_comments ? ` 💬${p.num_comments}` : "";
+      const age = p.created_utc ? ` (${formatRedditAge(p.created_utc)})` : "";
+      const body = p.selftext
+        ? `\n   ${p.selftext.slice(0, 300)}${p.selftext.length > 300 ? "..." : ""}`
+        : "";
+      return `${i + 1}. **${p.title}**${score}${comments}${age}\n   r/${subreddit} — https://reddit.com${p.permalink}\n${body}`;
+    })
+    .join("\n\n");
+}
+
+function formatRedditAge(timestamp) {
+  const diff = Date.now() - timestamp * 1000;
+  const days = Math.floor(diff / 86400000);
+  if (days === 0) return "today";
+  if (days === 1) return "1 day ago";
+  if (days < 30) return `${days} days ago`;
+  const months = Math.floor(days / 30);
+  if (months === 1) return "1 month ago";
+  if (months < 12) return `${months} months ago`;
+  return `${Math.floor(months / 12)}y ago`;
+}
+
+// ─── Wikipedia Search (MediaWiki Action API — free, no auth) ───
+
+async function wikipediaSearch(query, count = 5) {
+  const n = Math.min(count, 25);
+
+  // Try exact query first, then progressively broader searches
+  const searchTerms = [
+    query,
+    query.replace(/\b(202[0-9])\b/gi, "").trim(), // strip years
+    query.split(/\s+/).slice(0, 3).join(" "), // first 3 words
+    query.split(/\s+/).slice(0, 2).join(" "), // first 2 words
+    query.split(/\s+/)[0], // first word only
+  ].filter(Boolean);
+
+  let results = [];
+  let usedQuery = query;
+
+  for (const term of searchTerms) {
+    if (!term) continue;
+    const r = await fetch(
+      `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(term)}&format=json&srlimit=${n}&srprop=snippet|title|wordcount|size|timestamp&srinfo=totalhits`,
+      {
+        headers: {
+          "User-Agent":
+            "kamai:research-agent:v0.1.0 (https://kamai.minai.work)",
+        },
+      },
+    );
+    if (!r.ok)
+      throw new Error(`Wikipedia search failed: ${r.status} ${r.statusText}`);
+
+    const data = await r.json();
+    results = data.query?.search || [];
+    if (results.length > 0) {
+      usedQuery = term;
+      break;
+    }
+  }
+
+  if (!results.length) return "No Wikipedia results found.";
+
+  // Step 2: Fetch extracts for each result (plain text summary)
+  const titles = results.map((r) => r.title).join("|");
+  let extracts = {};
+  try {
+    const ext = await fetch(
+      `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(titles)}&prop=extracts&exintro&explaintext&format=json&exsentences=3`,
+      {
+        headers: {
+          "User-Agent":
+            "kamai:research-agent:v0.1.0 (https://kamai.minai.work)",
+        },
+      },
+    );
+    if (ext.ok) {
+      const extData = await ext.json();
+      const pages = extData.query?.pages || {};
+      for (const page of Object.values(pages)) {
+        if (page.extract) extracts[page.title] = page.extract;
+      }
+    }
+  } catch {
+    /* extracts are optional — fall back to snippets */
+  }
+
+  return results
+    .map((item, i) => {
+      const extract = extracts[item.title];
+      const size = item.size ? ` · ${Math.round(item.size / 1024)} KB` : "";
+      const timestamp = item.timestamp
+        ? ` · ${new Date(item.timestamp).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })}`
+        : "";
+      const snippet = extract
+        ? `\n   ${extract}`
+        : `\n   ${item.snippet.replace(/<\/?span[^>]*>/g, "")}`;
+      return `${i + 1}. **${item.title}**${size}${timestamp}\n   https://en.wikipedia.org/wiki/${encodeURIComponent(item.title.replace(/ /g, "_"))}${snippet}`;
+    })
+    .join("\n\n");
+}
+
 // ─── Web search (Brave) ───
 
-async function webSearch(query, count = 5) {
+async function webSearch(query, count = 5, site) {
+  // Detect site targeting
+  const isReddit =
+    site?.toLowerCase() === "reddit.com" ||
+    query.toLowerCase().startsWith("reddit:");
+  const isWikipedia =
+    site?.toLowerCase() === "wikipedia.org" ||
+    query.toLowerCase().startsWith("wikipedia:") ||
+    query.toLowerCase().startsWith("wiki:");
+  const isMedium =
+    site?.toLowerCase() === "medium.com" ||
+    query.toLowerCase().startsWith("medium:");
+  const isLinkedIn =
+    site?.toLowerCase() === "linkedin.com" ||
+    query.toLowerCase().startsWith("linkedin:") ||
+    query.toLowerCase().startsWith("li:");
+
+  // Strip site prefix from query
+  let cleanQuery = query;
+  let effectiveSite = site || null;
+
+  if (isReddit && query.toLowerCase().startsWith("reddit:")) {
+    cleanQuery = query.slice(7).trim();
+    effectiveSite = "reddit.com";
+  } else if (isWikipedia) {
+    const prefix = query.toLowerCase().startsWith("wiki:") ? 5 : 10;
+    cleanQuery = query.slice(prefix).trim();
+    effectiveSite = "wikipedia.org";
+  } else if (isMedium && query.toLowerCase().startsWith("medium:")) {
+    cleanQuery = query.slice(7).trim();
+    effectiveSite = "medium.com";
+  } else if (isLinkedIn) {
+    const prefix = query.toLowerCase().startsWith("li:") ? 3 : 9;
+    cleanQuery = query.slice(prefix).trim();
+    effectiveSite = "linkedin.com";
+  }
+
+  // ─── Reddit: try API if configured, fall back to Brave ───
+  if (
+    isReddit &&
+    process.env.REDDIT_CLIENT_ID &&
+    process.env.REDDIT_CLIENT_SECRET
+  ) {
+    try {
+      return redditSearch(cleanQuery, count);
+    } catch (err) {
+      console.log(
+        `[web_search] Reddit API failed (${err.message}), falling back to Brave`,
+      );
+    }
+  }
+
+  // ─── Wikipedia: use MediaWiki API (free, no auth needed) ───
+  if (isWikipedia) {
+    try {
+      const result = await wikipediaSearch(cleanQuery, count);
+      // If MediaWiki found no exact article matches, fall back to Brave
+      // site:wikipedia.org with a broader query (catches related pages,
+      // category pages, and articles that don't match the exact title search)
+      if (result === "No Wikipedia results found.") {
+        console.log(
+          `[web_search] Wikipedia API returned no results, falling back to Brave site:wikipedia.org`,
+        );
+        // Strip year qualifiers and other noise for a broader search
+        const broaderQuery = cleanQuery
+          .replace(/\b(202[0-9])\b/gi, "")
+          .replace(/\b(best|top|current|latest|new)\b/gi, "")
+          .trim();
+        const wikiQuery = broaderQuery || cleanQuery;
+        const key = process.env.BRAVE_API_KEY;
+        if (!key)
+          throw new Error(
+            "web_search is not available (BRAVE_API_KEY not configured)",
+          );
+        const n = Math.min(count, 10);
+        const r = await fetch(
+          `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(`site:wikipedia.org ${wikiQuery}`)}&count=${n}`,
+          {
+            headers: {
+              Accept: "application/json",
+              "X-Subscription-Token": key,
+            },
+          },
+        );
+        if (!r.ok)
+          throw new Error(`Brave search failed: ${r.status} ${r.statusText}`);
+        const data = await r.json();
+        const wikiResults = (data.web?.results || []).filter((item) =>
+          item.url?.includes("wikipedia.org"),
+        );
+        if (!wikiResults.length) return "No Wikipedia results found.";
+        return wikiResults
+          .map((item, i) => {
+            const age = item.age ? ` (${item.age})` : "";
+            return `${i + 1}. **${item.title}**${age}\n   ${item.url}\n   ${item.description || ""}`;
+          })
+          .join("\n\n");
+      }
+      return result;
+    } catch (err) {
+      console.log(
+        `[web_search] Wikipedia API failed (${err.message}), falling back to Brave`,
+      );
+    }
+  }
+
   const key = process.env.BRAVE_API_KEY;
-  if (!key) throw new Error('web_search is not available (BRAVE_API_KEY not configured)');
+  if (!key)
+    throw new Error(
+      "web_search is not available (BRAVE_API_KEY not configured)",
+    );
 
   const n = Math.min(count, 10);
 
-  // AI-optimised LLM context endpoint — returns pre-extracted content
-  try {
-    const r = await fetch(
-      `https://api.search.brave.com/res/v1/llm/context?q=${encodeURIComponent(query)}&count=${n}`,
-      { headers: { Accept: 'application/json', 'X-Subscription-Token': key } }
-    );
-    if (r.ok) {
-      const data = await r.json();
-      if (data.context) return data.context;
+  // Prepend site: modifier if specified
+  const finalQuery = effectiveSite
+    ? `site:${effectiveSite} ${cleanQuery}`
+    : cleanQuery;
+
+  // Brave's LLM context endpoint ignores site: modifiers, so skip it
+  // for site-specific searches and go straight to standard web search
+  if (!effectiveSite) {
+    // AI-optimised LLM context endpoint — returns pre-extracted content
+    try {
+      const r = await fetch(
+        `https://api.search.brave.com/res/v1/llm/context?q=${encodeURIComponent(finalQuery)}&count=${n}`,
+        {
+          headers: { Accept: "application/json", "X-Subscription-Token": key },
+        },
+      );
+      if (r.ok) {
+        const data = await r.json();
+        if (data.context) return data.context;
+      }
+    } catch {
+      /* fall through to standard endpoint */
     }
-  } catch { /* fall through to standard endpoint */ }
+  }
 
   // Standard web search fallback
   const r = await fetch(
-    `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${n}`,
-    { headers: { Accept: 'application/json', 'X-Subscription-Token': key } }
+    `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(finalQuery)}&count=${n}`,
+    { headers: { Accept: "application/json", "X-Subscription-Token": key } },
   );
-  if (!r.ok) throw new Error(`Brave search failed: ${r.status} ${r.statusText}`);
+  if (!r.ok)
+    throw new Error(`Brave search failed: ${r.status} ${r.statusText}`);
 
   const data = await r.json();
   const results = data.web?.results || [];
-  if (!results.length) return 'No results found.';
+  if (!results.length) return "No results found.";
 
-  return results.map((item, i) => {
-    const age = item.age ? `\n   (${item.age})` : '';
-    return `${i + 1}. **${item.title}**${age}\n   ${item.url}\n   ${item.description || ''}`;
-  }).join('\n\n');
+  return results
+    .map((item, i) => {
+      const age = item.age ? `\n   (${item.age})` : "";
+      return `${i + 1}. **${item.title}**${age}\n   ${item.url}\n   ${item.description || ""}`;
+    })
+    .join("\n\n");
 }
 
 // ─── Tool execution ───
 
 async function executeTool(name, args) {
   switch (name) {
-    case 'browse_page': {
-      if (!args?.url) throw new Error('Missing required parameter: url');
+    case "browse_page": {
+      if (!args?.url) throw new Error("Missing required parameter: url");
       const result = await browse(
         args.url,
         args.actions || [],
         args.selector || null,
-        args.timeout || DEFAULT_TIMEOUT
+        args.timeout || DEFAULT_TIMEOUT,
       );
-      if (!result.ok) throw new Error(result.error || 'Browse failed');
+      if (!result.ok) throw new Error(result.error || "Browse failed");
       return formatBrowseResult(result);
     }
-    case 'web_search': {
-      if (!args?.query) throw new Error('Missing required parameter: query');
-      return webSearch(args.query, args.count ?? 5);
+    case "web_search": {
+      if (!args?.query) throw new Error("Missing required parameter: query");
+      return webSearch(args.query, args.count ?? 5, args.site);
     }
     default:
       throw new Error(`Unknown tool: ${name}`);
@@ -479,50 +853,59 @@ function formatBrowseResult(result) {
   ];
 
   if (result.actions_performed?.length) {
-    parts.push(`Actions: ${result.actions_performed.join(' → ')}`);
+    parts.push(`Actions: ${result.actions_performed.join(" → ")}`);
   }
   if (result.memories?.length) {
-    parts.push(`\nDomain tips:\n${result.memories.map((m) => `- ${m}`).join('\n')}`);
+    parts.push(
+      `\nDomain tips:\n${result.memories.map((m) => `- ${m}`).join("\n")}`,
+    );
   }
 
-  parts.push('', result.text);
+  parts.push("", result.text);
 
   if (result.links?.length) {
-    const linkList = result.links.slice(0, 20).map((l) => `- [${l.text}](${l.href})`).join('\n');
+    const linkList = result.links
+      .slice(0, 20)
+      .map((l) => `- [${l.text}](${l.href})`)
+      .join("\n");
     parts.push(`\nLinks:\n${linkList}`);
   }
 
-  return parts.join('\n');
+  return parts.join("\n");
 }
 
 // ─── MCP server (Streamable HTTP transport, spec 2025-03-26) ───
 
-const MCP_PROTOCOL_VERSION = '2025-03-26';
+const MCP_PROTOCOL_VERSION = "2025-03-26";
 
 function mcpOk(id, result) {
-  return { jsonrpc: '2.0', id, result };
+  return { jsonrpc: "2.0", id, result };
 }
 
 function mcpErr(id, code, message) {
-  return { jsonrpc: '2.0', id, error: { code, message } };
+  return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
 async function handleMcp(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Mcp-Session-Id');
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Mcp-Session-Id");
 
-  if (req.method === 'OPTIONS') {
+  if (req.method === "OPTIONS") {
     res.writeHead(204);
     return res.end();
   }
 
   const raw = await readBody(req);
   let msg;
-  try { msg = JSON.parse(raw); } catch { return json(res, 400, mcpErr(null, -32700, 'Parse error')); }
+  try {
+    msg = JSON.parse(raw);
+  } catch {
+    return json(res, 400, mcpErr(null, -32700, "Parse error"));
+  }
 
-  if (msg.jsonrpc !== '2.0') {
-    return json(res, 400, mcpErr(msg.id ?? null, -32600, 'Invalid Request'));
+  if (msg.jsonrpc !== "2.0") {
+    return json(res, 400, mcpErr(msg.id ?? null, -32600, "Invalid Request"));
   }
 
   const { id, method, params } = msg;
@@ -530,39 +913,53 @@ async function handleMcp(req, res) {
   const isNotification = id === undefined || id === null;
 
   switch (method) {
-    case 'initialize':
-      return json(res, 200, mcpOk(id, {
-        protocolVersion: MCP_PROTOCOL_VERSION,
-        capabilities: { tools: {} },
-        serverInfo: { name: 'kamai', version: '0.0.2' },
-      }));
+    case "initialize":
+      return json(
+        res,
+        200,
+        mcpOk(id, {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: { tools: {} },
+          serverInfo: { name: "kamai", version: "0.0.2" },
+        }),
+      );
 
-    case 'ping':
-      if (isNotification) { res.writeHead(202); return res.end(); }
+    case "ping":
+      if (isNotification) {
+        res.writeHead(202);
+        return res.end();
+      }
       return json(res, 200, mcpOk(id, {}));
 
-    case 'notifications/initialized':
+    case "notifications/initialized":
       res.writeHead(202);
       return res.end();
 
-    case 'tools/list':
+    case "tools/list":
       return json(res, 200, mcpOk(id, { tools: getTools() }));
 
-    case 'tools/call': {
+    case "tools/call": {
       const { name, arguments: args } = params || {};
       try {
         const text = await executeTool(name, args || {});
-        return json(res, 200, mcpOk(id, { content: [{ type: 'text', text }] }));
+        return json(res, 200, mcpOk(id, { content: [{ type: "text", text }] }));
       } catch (err) {
-        return json(res, 200, mcpOk(id, {
-          content: [{ type: 'text', text: `Error: ${err.message}` }],
-          isError: true,
-        }));
+        return json(
+          res,
+          200,
+          mcpOk(id, {
+            content: [{ type: "text", text: `Error: ${err.message}` }],
+            isError: true,
+          }),
+        );
       }
     }
 
     default:
-      if (isNotification) { res.writeHead(202); return res.end(); }
+      if (isNotification) {
+        res.writeHead(202);
+        return res.end();
+      }
       return json(res, 200, mcpErr(id, -32601, `Method not found: ${method}`));
   }
 }
@@ -570,9 +967,9 @@ async function handleMcp(req, res) {
 // ─── OpenAI-compatible tool API ───
 
 function handleOpenAITools(_req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader("Access-Control-Allow-Origin", "*");
   const tools = getTools().map((t) => ({
-    type: 'function',
+    type: "function",
     function: {
       name: t.name,
       description: t.description,
@@ -583,23 +980,31 @@ function handleOpenAITools(_req, res) {
 }
 
 async function handleOpenAIExecute(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === 'OPTIONS') {
+  if (req.method === "OPTIONS") {
     res.writeHead(204);
     return res.end();
   }
 
   const raw = await readBody(req);
   let data;
-  try { data = JSON.parse(raw); } catch { return json(res, 400, { error: 'Invalid JSON' }); }
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return json(res, 400, { error: "Invalid JSON" });
+  }
 
   const { name } = data;
   let args = data.arguments;
-  if (typeof args === 'string') {
-    try { args = JSON.parse(args); } catch { return json(res, 400, { error: 'Invalid arguments JSON' }); }
+  if (typeof args === "string") {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      return json(res, 400, { error: "Invalid arguments JSON" });
+    }
   }
 
   try {
@@ -819,19 +1224,21 @@ POST /openai/execute
 
 function readBody(req) {
   return new Promise((resolve) => {
-    let body = '';
-    req.on('data', (c) => { body += c; });
-    req.on('end', () => resolve(body));
+    let body = "";
+    req.on("data", (c) => {
+      body += c;
+    });
+    req.on("end", () => resolve(body));
   });
 }
 
 function json(res, status, data) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data));
 }
 
 function parseUrl(reqUrl) {
-  return new URL(reqUrl, 'http://localhost');
+  return new URL(reqUrl, "http://localhost");
 }
 
 // ─── HTTP server ───
@@ -841,47 +1248,57 @@ const server = http.createServer(async (req, res) => {
   const path = parsed.pathname;
 
   // ── Landing page ──
-  if (req.method === 'GET' && path === '/') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  if (req.method === "GET" && path === "/") {
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     return res.end(getLandingPage());
   }
 
   // ── Agent skill file ──
-  if (req.method === 'GET' && path === '/skill.md') {
+  if (req.method === "GET" && path === "/skill.md") {
     try {
-      const content = await readFile(join(__dirname, 'skill.md'), 'utf8');
-      res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+      const content = await readFile(join(__dirname, "skill.md"), "utf8");
+      res.writeHead(200, { "Content-Type": "text/markdown; charset=utf-8" });
       return res.end(content);
     } catch {
-      return json(res, 404, { ok: false, error: 'skill.md not found' });
+      return json(res, 404, { ok: false, error: "skill.md not found" });
     }
   }
 
   // ── Health check ──
-  if (req.method === 'GET' && path === '/health') {
-    const memCount = db.prepare('SELECT COUNT(*) AS n FROM browse_page_memories').get();
+  if (req.method === "GET" && path === "/health") {
+    const memCount = db
+      .prepare("SELECT COUNT(*) AS n FROM browse_page_memories")
+      .get();
     const tools = getTools().map((t) => t.name);
-    return json(res, 200, { ok: true, engine: 'playwright-chromium', memories: memCount.n, tools });
+    return json(res, 200, {
+      ok: true,
+      engine: "playwright-chromium",
+      memories: memCount.n,
+      tools,
+    });
   }
 
   // ── MCP (Streamable HTTP transport) ──
-  if ((req.method === 'POST' || req.method === 'OPTIONS') && path === '/mcp') {
+  if ((req.method === "POST" || req.method === "OPTIONS") && path === "/mcp") {
     return handleMcp(req, res);
   }
 
   // ── OpenAI-compatible tool API ──
-  if (req.method === 'GET' && path === '/openai/tools') {
+  if (req.method === "GET" && path === "/openai/tools") {
     return handleOpenAITools(req, res);
   }
-  if ((req.method === 'POST' || req.method === 'OPTIONS') && path === '/openai/execute') {
+  if (
+    (req.method === "POST" || req.method === "OPTIONS") &&
+    path === "/openai/execute"
+  ) {
     return handleOpenAIExecute(req, res);
   }
 
   // ── GET /browse/memories?domain=... ──
-  if (req.method === 'GET' && path === '/browse/memories') {
-    const domain = parsed.searchParams.get('domain');
+  if (req.method === "GET" && path === "/browse/memories") {
+    const domain = parsed.searchParams.get("domain");
     if (domain) {
-      const memories = getMemoriesForDomain(domain.replace(/^www\./, ''));
+      const memories = getMemoriesForDomain(domain.replace(/^www\./, ""));
       return json(res, 200, { ok: true, domain, memories });
     }
     // No domain filter → return all
@@ -890,69 +1307,130 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── POST /browse/memories ──
-  if (req.method === 'POST' && path === '/browse/memories') {
+  if (req.method === "POST" && path === "/browse/memories") {
     const body = await readBody(req);
     let data;
-    try { data = JSON.parse(body); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON' }); }
+    try {
+      data = JSON.parse(body);
+    } catch {
+      return json(res, 400, { ok: false, error: "Invalid JSON" });
+    }
 
     const { domain, learning } = data;
-    if (!domain || !learning) return json(res, 400, { ok: false, error: 'Missing "domain" and "learning"' });
+    if (!domain || !learning)
+      return json(res, 400, {
+        ok: false,
+        error: 'Missing "domain" and "learning"',
+      });
 
-    const cleanDomain = domain.replace(/^www\./, '').toLowerCase();
+    const cleanDomain = domain.replace(/^www\./, "").toLowerCase();
     const result = stmtInsertMemory.run(cleanDomain, learning);
-    console.log(`[Memory] Saved for ${cleanDomain}: "${learning.slice(0, 80)}"`);
-    return json(res, 201, { ok: true, id: result.lastInsertRowid, domain: cleanDomain, learning });
+    console.log(
+      `[Memory] Saved for ${cleanDomain}: "${learning.slice(0, 80)}"`,
+    );
+    return json(res, 201, {
+      ok: true,
+      id: result.lastInsertRowid,
+      domain: cleanDomain,
+      learning,
+    });
   }
 
   // ── DELETE /browse/memories/:id ──
-  if (req.method === 'DELETE' && path.startsWith('/browse/memories/')) {
-    const id = parseInt(path.split('/').pop(), 10);
-    if (isNaN(id)) return json(res, 400, { ok: false, error: 'Invalid ID' });
+  if (req.method === "DELETE" && path.startsWith("/browse/memories/")) {
+    const id = parseInt(path.split("/").pop(), 10);
+    if (isNaN(id)) return json(res, 400, { ok: false, error: "Invalid ID" });
     stmtDeleteMemory.run(id);
     return json(res, 200, { ok: true, deleted: id });
   }
 
   // ── POST /browse ──
-  if (req.method === 'POST' && (path === '/browse' || path === '/api/v1/browse')) {
+  if (
+    req.method === "POST" &&
+    (path === "/browse" || path === "/api/v1/browse")
+  ) {
     const body = await readBody(req);
     let data;
-    try { data = JSON.parse(body); } catch { return json(res, 400, { ok: false, error: 'Invalid JSON' }); }
+    try {
+      data = JSON.parse(body);
+    } catch {
+      return json(res, 400, { ok: false, error: "Invalid JSON" });
+    }
 
     const { url, actions, selector, timeout } = data;
-    if (!url || typeof url !== 'string') return json(res, 400, { ok: false, error: 'Missing "url" field' });
+    if (!url || typeof url !== "string")
+      return json(res, 400, { ok: false, error: 'Missing "url" field' });
 
-    const callerIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const callerIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
     const ts = new Date().toISOString();
     const startMs = Date.now();
-    const actionSummary = actions?.length ? ` | ${actions.length} actions` : '';
+    const actionSummary = actions?.length ? ` | ${actions.length} actions` : "";
 
-    console.log(`[Browse] ${ts} | ${callerIp} | REQ ${url}${actionSummary}${selector ? ` (${selector})` : ''}`);
+    console.log(
+      `[Browse] ${ts} | ${callerIp} | REQ ${url}${actionSummary}${selector ? ` (${selector})` : ""}`,
+    );
 
     try {
-      const result = await browse(url, actions || [], selector || null, timeout || DEFAULT_TIMEOUT);
+      const result = await browse(
+        url,
+        actions || [],
+        selector || null,
+        timeout || DEFAULT_TIMEOUT,
+      );
       const elapsed = Date.now() - startMs;
       json(res, 200, result);
-      const memTag = result.memories?.length ? ` | ${result.memories.length} memories` : '';
-      console.log(`[Browse] ${ts} | ${callerIp} | OK  ${url} | ${result.length} chars | ${elapsed}ms${memTag}`);
+      const memTag = result.memories?.length
+        ? ` | ${result.memories.length} memories`
+        : "";
+      console.log(
+        `[Browse] ${ts} | ${callerIp} | OK  ${url} | ${result.length} chars | ${elapsed}ms${memTag}`,
+      );
     } catch (err) {
       const elapsed = Date.now() - startMs;
-      console.error(`[Browse] ${ts} | ${callerIp} | ERR ${url} | ${err.message} | ${elapsed}ms`);
-      json(res, 500, { ok: false, error: err.message || 'Browse failed' });
+      console.error(
+        `[Browse] ${ts} | ${callerIp} | ERR ${url} | ${err.message} | ${elapsed}ms`,
+      );
+      json(res, 500, { ok: false, error: err.message || "Browse failed" });
     }
     return;
   }
 
-  json(res, 404, { ok: false, error: 'Not found' });
+  json(res, 404, { ok: false, error: "Not found" });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  const searchEnabled = process.env.BRAVE_API_KEY ? 'yes' : 'no (set BRAVE_API_KEY to enable)';
-  console.log(`[Browse] HTTP server listening on port ${PORT} (Playwright + Chromium + Memories)`);
+server.listen(PORT, "0.0.0.0", () => {
+  const searchEnabled = process.env.BRAVE_API_KEY
+    ? "yes"
+    : "no (set BRAVE_API_KEY to enable)";
+  const redditEnabled = process.env.REDDIT_CLIENT_ID
+    ? "yes"
+    : "no (set REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET to enable)";
+  console.log(
+    `[Browse] HTTP server listening on port ${PORT} (Playwright + Chromium + Memories)`,
+  );
   console.log(`[Browse] MCP endpoint:    POST /mcp`);
-  console.log(`[Browse] OpenAI endpoint: GET /openai/tools  POST /openai/execute`);
+  console.log(
+    `[Browse] OpenAI endpoint: GET /openai/tools  POST /openai/execute`,
+  );
   console.log(`[Browse] web_search:      ${searchEnabled}`);
+  console.log(`[Browse] reddit_search:   ${redditEnabled}`);
+  console.log(`[Browse] wikipedia_search: always (free, no auth)`);
+  console.log(
+    `[Browse] medium_search:   ${searchEnabled} (via Brave site:medium.com)`,
+  );
+  console.log(
+    `[Browse] linkedin_search: ${searchEnabled} (via Brave site:linkedin.com)`,
+  );
 });
 
 // Graceful shutdown
-process.on('SIGINT', async () => { db.close(); await browser?.close(); process.exit(0); });
-process.on('SIGTERM', async () => { db.close(); await browser?.close(); process.exit(0); });
+process.on("SIGINT", async () => {
+  db.close();
+  await browser?.close();
+  process.exit(0);
+});
+process.on("SIGTERM", async () => {
+  db.close();
+  await browser?.close();
+  process.exit(0);
+});
