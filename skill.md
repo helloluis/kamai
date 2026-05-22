@@ -350,6 +350,98 @@ Returns `Content-Type: application/pdf`.
 | `product-showcase` | Product catalogs, menus, portfolios | `title`, `products` |
 | `event-invitation` | Conferences, workshops, launches | `title`, `event` |
 
+## Web Search
+
+kamai proxies Brave Search so callers can run high-volume search without
+managing their own Brave subscription or hitting Brave's 1 req/sec free-plan
+rate limit. Two endpoints:
+
+### POST /api/v1/search/web
+
+LLM-optimised web search — returns extracted page snippets plus source URLs.
+
+**Request:**
+```json
+{
+  "q": "Tim Cook age",
+  "count": 5,
+  "country": "US"
+}
+```
+
+**Parameters:**
+- `q` (required) — search query
+- `count` (optional) — number of results, default 5, max 20
+- `country` (optional) — 2-letter country code or `ALL`
+- `maxTokens` (optional) — token budget for context API (default 4096)
+
+**Response:**
+```json
+{
+  "ok": true,
+  "source": "llm_context",
+  "query": "Tim Cook age",
+  "results": [
+    {
+      "title": "Tim Cook - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Tim_Cook",
+      "description": "Born November 1, 1960 in Mobile, Alabama...",
+      "content": "Tim Cook is an American business executive...",
+      "age": "2 days ago"
+    }
+  ]
+}
+```
+
+If the LLM Context API is unavailable, kamai automatically falls back to
+the standard Brave Web Search API (response shape is the same, minus `content`).
+
+### POST /api/v1/search/image
+
+Image search — returns direct image URLs, thumbnails, and source pages.
+
+**Request:**
+```json
+{
+  "q": "Eiffel Tower at night",
+  "count": 10,
+  "safesearch": "strict"
+}
+```
+
+**Parameters:**
+- `q` (required) — search query
+- `count` (optional) — max results, default 5, max 50
+- `safesearch` (optional) — `strict` (default) or `off`
+
+**Response:**
+```json
+{
+  "ok": true,
+  "query": "Eiffel Tower at night",
+  "results": [
+    {
+      "title": "Eiffel Tower glowing at night",
+      "url": "https://example.com/article",
+      "imageUrl": "https://...full.jpg",
+      "thumbnailUrl": "https://...thumb.jpg",
+      "width": 1200,
+      "height": 800,
+      "source": "example.com"
+    }
+  ]
+}
+```
+
+### Cost
+
+| Endpoint | Cost |
+|----------|------|
+| `/search/web` | $0.003 |
+| `/search/image` | $0.003 |
+
+Sister apps get the standard 50% discount.
+
 ## Rate Limits
 
 - 60 requests per minute per IP

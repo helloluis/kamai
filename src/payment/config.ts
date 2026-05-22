@@ -55,6 +55,9 @@ export function usdcUnitsToUsd(units: bigint): string {
 /** Brochure PDF generation */
 export const PRICE_BROCHURE = 0.05;
 
+/** Web/image search via Brave proxy (Brave Pro: $5/mo flat → ~$0.0003/call, marked up) */
+export const PRICE_SEARCH = 0.003;
+
 /** Get the price for a request based on whether it has actions */
 export function getRequestPrice(hasActions: boolean, isSister: boolean): number {
   const base = hasActions ? PRICE_ACTIONS : PRICE_BROWSE;
