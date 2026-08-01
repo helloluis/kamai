@@ -1,231 +1,93 @@
-# Browse Service (kamai)
+# kamai
 
-Headless browser service (Playwright + Chromium) with a self-improving domain memory layer. Runs on the kamai box (`45.76.180.229:3100`, public URL `https://kamai.minai.work`).
+Headless browser and search backend for LLM agentic apps. Express + Playwright (Chromium) with per-domain memory, session persistence, a Brave Search proxy, and USDC micropayments on Celo.
 
-## Architecture
+Public URL: `https://kamai.minai.work` — LLM-facing integration spec: [`skill.md`](skill.md) (also served at `/skill.md`).
 
-- **Playwright + Chromium** headless browser for rendering JS-heavy pages, ASPX sites, SPAs
-- **SQLite** (`browse_memories.db`) stores per-domain learnings that improve over time
-- **PM2** managed, auto-restarts on reboot
-- **Firewall**: port 3100 restricted to sibling VPS IPs only; public access via nginx at port 443
+## Stack
 
-## Tools
-
-| Tool | Description |
-|------|-------------|
-| `browse_page` | Browse a URL with optional interactions (click, type, evaluate JS, etc.) |
-| `web_search` | Brave web search — only available if `BRAVE_API_KEY` is set in env |
+- **TypeScript / Express 5** — source in `src/`, compiled to `dist/` (`npm run build`)
+- **Playwright + Chromium** — headless browsing with stealth measures (`src/browser/`)
+- **SQLite** (`better-sqlite3`) — per-domain memories (`browse_memories.db`), credit ledger (`credits.db`)
+- **PM2** — process manager on the VPS (`pm2 start dist/index.js --name kamai`)
 
 ## Endpoints
 
-### `POST /browse`
+| Route | Auth | Description |
+|-------|------|-------------|
+| `POST /api/v1/browse` | credits | Browse a URL with optional actions; returns text, links, forms, memories |
+| `POST /api/v1/search/web` | credits | Brave web search (LLM Context API, falls back to standard) |
+| `POST /api/v1/search/image` | credits | Brave image search proxy |
+| `POST /api/v1/brochure/generate` | credits | Generate a PDF brochure from structured content |
+| `GET /api/v1/brochure/:id/download` | — | Download a generated PDF |
+| `GET /api/v1/brochure/templates` | credits | List brochure templates |
+| `PATCH /api/v1/brochure/:id` | credits | Update and re-render a brochure |
+| `POST /api/v1/session` | rate-limited | Create an explicit browser session |
+| `GET/DELETE /api/v1/session/:id` | rate-limited | Session status / destroy |
+| `GET /api/v1/account` | wallet | Account info, balance, API key |
+| `POST /api/v1/account/generate-key` | wallet | Generate/regenerate an API key |
+| `POST /api/v1/deposit` | rate-limited | Register a USDC (Celo) deposit by tx hash |
+| `GET /api/v1/deposit/balance` | wallet | Check credit balance |
+| `GET/POST /browse/memories` | — | Read/save per-domain learnings (`DELETE /browse/memories/:id` too) |
+| `GET /health` | — | Health check |
+| `GET /skill.md` | — | Machine-readable integration spec |
 
-Legacy endpoint (used by minai API). Navigate to a URL, optionally interact with the page, extract content.
+**Legacy aliases (no payment, for sister app backends):** `POST /browse`, `POST /search/web`, `POST /search/image`, and `/api/v1/browse/memories` (mirrors `/browse/memories`).
 
-```json
-{
-  "url": "https://example.com",
-  "actions": [
-    { "action": "type", "selector": "#search", "text": "query" },
-    { "action": "click_and_wait", "selector": "#submit" }
-  ],
-  "selector": ".results",
-  "timeout": 15000
-}
-```
+## Auth & pricing
 
-**Response:**
-```json
-{
-  "ok": true,
-  "url": "https://example.com/results",
-  "title": "Search Results",
-  "text": "...",
-  "links": [{ "text": "Link", "href": "https://..." }],
-  "forms": [{ "tag": "input", "type": "text", "selector": "#search", "placeholder": "Search..." }],
-  "memories": ["Use /Indexes/index for keyword search instead of homepage"],
-  "actions_performed": ["typed \"query\" into #search", "clicked #submit → navigated"],
-  "length": 4500
-}
-```
+Identify with `x-api-key` or `x-wallet-address` header. Sister apps (keys in `SISTER_API_KEYS`) bypass payment entirely. Everyone else pays per request from a USDC credit balance; first request each day is free.
 
-**Available actions:**
+| Request | Cost |
+|---------|------|
+| Browse (no actions) | $0.009 |
+| Browse with actions | $0.013 |
+| Search (web/image) | $0.003 |
+| Brochure PDF | $0.050 |
 
-| Action | Required params | Description |
-|--------|----------------|-------------|
-| `type` | `selector`, `text` | Clear field and type text |
-| `click` | `selector` | Click element, 500ms pause |
-| `click_and_wait` | `selector` | Click and wait for page navigation |
-| `submit` | `selector?` | Programmatic form.submit() + wait for navigation |
-| `evaluate` | `text` | Run arbitrary JS (pass code in `text`) |
-| `select` | `selector`, `value` | Choose dropdown option |
-| `wait` | `selector` | Wait for element to appear |
-| `wait_ms` | `ms` | Pause (max 5000ms) |
+## How it works
 
-**Limits:** max 20 actions per request, 30K char text cap, 15s default timeout.
-
-**Safety:** blocks `file://`, `data://`, localhost, and private IP ranges.
-
----
-
-### `POST /mcp` — MCP Server (Streamable HTTP transport)
-
-Standard [Model Context Protocol](https://modelcontextprotocol.io) endpoint. Any MCP client (Claude Code, Claude Desktop, Ollama, LM Studio, etc.) can connect to `https://kamai.minai.work/mcp`.
-
-Protocol version: `2025-03-26`. Supports `initialize`, `tools/list`, `tools/call`, `ping`.
-
-**Example: initialize**
-```json
-// Request
-{ "jsonrpc": "2.0", "id": 1, "method": "initialize",
-  "params": { "protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": { "name": "myapp", "version": "1.0" } } }
-
-// Response
-{ "jsonrpc": "2.0", "id": 1, "result": {
-    "protocolVersion": "2025-03-26",
-    "capabilities": { "tools": {} },
-    "serverInfo": { "name": "kamai", "version": "0.0.2" } } }
-```
-
-**Example: list tools**
-```json
-// Request
-{ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }
-
-// Response
-{ "jsonrpc": "2.0", "id": 2, "result": { "tools": [ { "name": "browse_page", ... } ] } }
-```
-
-**Example: call a tool**
-```json
-// Request
-{ "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-  "params": { "name": "browse_page", "arguments": { "url": "https://example.com" } } }
-
-// Response
-{ "jsonrpc": "2.0", "id": 3, "result": { "content": [{ "type": "text", "text": "Page: Example..." }] } }
-```
-
-**Claude Code config** (`~/.claude/claude_desktop_config.json` or project `.mcp.json`):
-```json
-{
-  "mcpServers": {
-    "kamai": {
-      "type": "http",
-      "url": "https://kamai.minai.work/mcp"
-    }
-  }
-}
-```
-
----
-
-### `GET /openai/tools` — OpenAI function schema
-
-Returns tool definitions in OpenAI function-calling format. Use this to inject tool schemas into any OpenAI-API-compatible LLM request.
-
-```json
-[
-  {
-    "type": "function",
-    "function": {
-      "name": "browse_page",
-      "description": "Browse a URL using a headless Chromium browser...",
-      "parameters": { "type": "object", "properties": { "url": { ... } }, "required": ["url"] }
-    }
-  }
-]
-```
-
-**llama.cpp / Ollama usage:** fetch the schemas, include them in your chat request's `tools` array, then forward tool calls to `POST /openai/execute`.
-
-### `POST /openai/execute` — Execute a tool call
-
-Accepts an OpenAI-style tool call object and returns the result as plain text. `arguments` can be a JSON string (as the LLM outputs it) or a parsed object.
-
-```json
-// Request
-{ "name": "browse_page", "arguments": "{\"url\": \"https://example.com\"}" }
-
-// Response
-{ "content": "Page: Example Domain\nURL: https://example.com\nLength: 648 chars\n\n..." }
-```
-
----
-
-### `GET /browse/memories?domain=example.com`
-
-Retrieve all learnings for a domain. Omit `domain` to list all memories.
-
-```json
-{
-  "ok": true,
-  "domain": "philgeps.gov.ph",
-  "memories": [
-    {
-      "id": 1,
-      "domain": "philgeps.gov.ph",
-      "learning": "Use /Indexes/index for keyword search instead of the homepage search form",
-      "created_at": "2026-03-22 10:30:00"
-    }
-  ]
-}
-```
-
-### `POST /browse/memories`
-
-Save a new learning for a domain.
-
-```json
-{ "domain": "philgeps.gov.ph", "learning": "Use /Indexes/index for keyword search" }
-```
-
-**Response:** `{ "ok": true, "id": 1, "domain": "philgeps.gov.ph", "learning": "..." }`
-
-### `DELETE /browse/memories/:id`
-
-Delete a specific memory by ID.
-
-### `GET /health`
-
-```json
-{ "ok": true, "engine": "playwright-chromium", "memories": 3, "tools": ["browse_page", "web_search"] }
-```
-
----
-
-## Domain Memories — How It Works
-
-1. When `POST /browse` is called, the service extracts the domain from the URL
-2. Any matching memories from `browse_page_memories` are included in the response as `memories[]`
-3. The LLM sees these tips alongside the page content and can adjust its approach
-4. When the LLM discovers a better navigation path, it calls `browse_page_memory` (via the minai API tool) to save the learning
-5. Future requests to the same domain automatically benefit from the saved knowledge
-
-**Design principle:** each tool on this server gets its own SQLite database and `*_memories` table. As new tools are added, they spawn their own memory stores following the same pattern.
-
-## Integration (minai API)
-
-The minai API exposes these tools to the LLM:
-
-- **`browse_web`** — calls `POST /browse`, surfaces `memories` as "Domain tips" in the response
-- **`browse_page_memory`** — calls `POST /browse/memories` to save a learning
+- **Browse** navigates with Playwright, optionally runs up to 20 actions (`type`, `click`, `click_and_wait`, `submit`, `select`, `wait`, `wait_ms`, `scroll_to`, `js_click`, `set_date`, `evaluate`), then extracts text/links/forms. Blocks `file:`, `data:`, localhost, private IPs.
+- **Auto-sessions**: each caller identity (API key → wallet → IP) gets a persistent browser context; cookies/auth/localStorage survive across requests, expiring after 30 min idle.
+- **Strategies**: known domains bypass Playwright — YouTube → yt-dlp, GitHub → API (`src/browser/strategies/`). A domain memory with a `strategy` field overrides routing.
+- **Domain memories**: learnings saved via `POST /browse/memories` are attached to every browse response for that domain, so agents improve over time.
 
 ## Deployment
 
+Runs on a shared Vultr VPS (`45.76.180.229`, ssh alias `browse`) at `/opt/kamai`, behind nginx (`/etc/nginx/sites-enabled/kamai`, port 443 → 3100). TLS via certbot (Let's Encrypt, auto-renewal). The box hosts several other apps — be careful with `nginx -t` before any reload.
+
 ```bash
-# On the kamai box (45.76.180.229)
 ssh browse
 cd /opt/kamai
 git pull origin main
 npm install
-pm2 restart kamai
+npm run build
+pm2 restart kamai        # runs dist/index.js; PORT/HOST come from .env
 ```
 
-To enable `web_search`, add `BRAVE_API_KEY=<key>` to `/opt/kamai/.env` before restarting.
+First-time env setup: copy `.env.example` to `.env` and fill in `BRAVE_API_KEY`, `SISTER_API_KEYS`, `WALLET_SEED`, `PAYMENT_RECIPIENT_ADDRESS`.
 
-## Files
+## Project structure
 
-- `server.js` — HTTP server, Playwright browser, SQLite memories, MCP + OpenAI endpoints
-- `browse_memories.db` — SQLite database (auto-created on first run)
-- `package.json` — dependencies: `playwright`, `better-sqlite3`
+```
+src/
+  index.ts              — Express app wiring, route mounts, startup/shutdown
+  api/
+    middleware/         — rate-limit
+    routes/             — browse, search, memories, brochure, session, account, deposit, health
+  browser/
+    engine.ts           — shared Chromium instance + stealth context
+    browse.ts           — navigate → actions → extract
+    actions.ts          — the 11 action types, overlay dismissal, text= selectors
+    extract.ts          — text/links/forms extraction
+    session-manager.ts  — per-caller persistent contexts
+    strategies/         — yt-dlp (YouTube), github-api
+  payment/
+    middleware.ts       — credit charging, sister-key bypass, daily freebie
+    credits.ts          — SQLite credit ledger
+    wallet.ts           — HD wallet deposit-address derivation
+    verifier.ts         — on-chain deposit verification
+    config.ts           — chains, pricing, sister keys
+  brochure/             — react-pdf templates, renderer, expiring storage
+dashboard/              — Next.js landing page (separate app, port 3200)
+```

@@ -6,8 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
-    "test": "node --test tests/"
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "@react-pdf/renderer": "^4.4.0",

@@ -7,3 +7,4 @@ dist/
 .env.local
 dashboard/.next/
 data/
+.DS_Store

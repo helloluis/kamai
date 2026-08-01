@@ -40,6 +40,11 @@ app.use('/health', healthRouter);
 app.use('/api/v1/account', rateLimit, accountRouter);
 app.use('/api/v1/deposit', rateLimit, depositRouter);
 
+// Memories under /api/v1/browse — must be mounted BEFORE the browse router
+// (prefix match would otherwise swallow /api/v1/browse/memories).
+// Free like the legacy /browse/memories route; beaniebot saves learnings here.
+app.use('/api/v1/browse/memories', rateLimit, memoriesRouter);
+
 // Protected routes — credit-based payment (identity via wallet or API key)
 app.use('/api/v1/browse', rateLimit, creditPayment(), browseRouter);
 app.use('/api/v1/brochure', express.json({ limit: '10mb' }), rateLimit, creditPayment(PRICE_BROCHURE), brochureRouter);
