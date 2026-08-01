@@ -7,4 +7,4 @@ dist/
 .env.local
 dashboard/.next/
 data/
-.DS_Store
+.DS_Store.qwen/
