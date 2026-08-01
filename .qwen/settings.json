@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch",
+      "Read(//Users/luis/Library/Application Support/Zed/node/cache/_npx/eb25e80018cbc817/node_modules/@qwen-code/qwen-code/bundled/qc-helper/docs/features/**)",
+      "Read(//Users/luis/Library/Application Support/Zed/node/cache/_npx/eb25e80018cbc817/node_modules/@qwen-code/qwen-code/**)",
+      "Read(//Users/luis/.qwen/**)",
+      "Bash(node *)",
+      "Bash(pkill *)",
+      "Bash(git config *)",
+      "Bash(ls *)",
+      "Bash(ssh *)",
+      "Bash(git remote *)",
+      "Bash(cat)",
+      "Bash(host *)",
+      "Bash(hostname *)",
+      "Bash(port *)",
+      "Bash(user *)",
+      "Bash(identityfile *)",
+      "Bash(eof)"
+    ]
+  },
+  "$version": 4
+}

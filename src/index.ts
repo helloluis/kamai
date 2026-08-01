@@ -18,6 +18,7 @@ import memoriesRouter, { closeMemoriesDb } from './api/routes/memories.js';
 import brochureRouter, { brochurePublic } from './api/routes/brochure.js';
 import searchRouter from './api/routes/search.js';
 import { shutdown } from './browser/index.js';
+import { landingPage } from './api/landing.js';
 import { closeCreditsDb } from './payment/credits.js';
 import { cleanupExpired, closeBrochureDb } from './brochure/index.js';
 import { PRICE_BROCHURE, PRICE_SEARCH } from './payment/config.js';
@@ -59,6 +60,11 @@ app.use('/api/v1/session', rateLimit, sessionRouter);
 app.use('/browse/memories', memoriesRouter);
 app.use('/browse', browseRouter);
 app.use('/search', searchRouter);
+
+// Landing page — API documentation for integrating apps
+app.get('/', (_req, res) => {
+  res.type('html').send(landingPage());
+});
 
 // Skill file — downloadable LLM integration spec
 app.get('/skill.md', (_req, res) => {

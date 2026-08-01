@@ -30,6 +30,7 @@ Public URL: `https://kamai.minai.work` — LLM-facing integration spec: [`skill.
 | `GET /api/v1/deposit/balance` | wallet | Check credit balance |
 | `GET/POST /browse/memories` | — | Read/save per-domain learnings (`DELETE /browse/memories/:id` too) |
 | `GET /health` | — | Health check |
+| `GET /` | — | Landing page (API documentation) |
 | `GET /skill.md` | — | Machine-readable integration spec |
 
 **Legacy aliases (no payment, for sister app backends):** `POST /browse`, `POST /search/web`, `POST /search/image`, and `/api/v1/browse/memories` (mirrors `/browse/memories`).

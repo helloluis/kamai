@@ -21,10 +21,12 @@ interface BraveLLMContextResponse {
   grounding: {
     generic?: Array<{
       url: string;
-      snippets: Array<{ text: string; relevance_score?: number }>;
+      title?: string;
+      snippets?: Array<string | { text?: string; relevance_score?: number }>;
     }>;
   };
-  sources?: Array<{ url: string; title: string; hostname: string; page_age?: string }>;
+  /** Map of URL → source metadata (NOT an array). */
+  sources?: Record<string, { title?: string; hostname?: string; age?: string[] | string; snippet?: string }>;
 }
 
 interface BraveWebSearchResponse {
@@ -102,11 +104,10 @@ router.post('/web', async (req, res) => {
 
     if (llmResp.ok) {
       const data = (await llmResp.json()) as BraveLLMContextResponse;
-      // Build flat result list with extracted content
-      const sourceMap = new Map<string, { title: string; age?: string }>();
-      for (const s of data.sources || []) {
-        if (s?.url) sourceMap.set(s.url, { title: s.title || '', age: s.page_age });
-      }
+      // Real API shape: grounding.generic[].snippets are plain strings;
+      // sources is a map keyed by URL (not an array).
+      const generic = Array.isArray(data?.grounding?.generic) ? data.grounding.generic : [];
+      const sources = data.sources && typeof data.sources === 'object' ? data.sources : {};
       const results: Array<{
         title: string;
         url: string;
@@ -114,19 +115,20 @@ router.post('/web', async (req, res) => {
         content?: string;
         age?: string;
       }> = [];
-      for (const item of data.grounding?.generic || []) {
+      for (const item of generic) {
         if (!item?.url) continue;
-        const meta = sourceMap.get(item.url);
-        const snippets = (item.snippets || [])
-          .filter((s) => s?.text)
-          .sort((a, b) => (b.relevance_score || 0) - (a.relevance_score || 0));
-        const content = snippets.map((s) => s.text.trim()).filter((t) => t.length > 0).join('\n\n');
+        const meta = sources[item.url];
+        const texts = (Array.isArray(item.snippets) ? item.snippets : [])
+          .map((s) => (typeof s === 'string' ? s : s?.text || ''))
+          .map((t) => t.trim())
+          .filter((t) => t.length > 0);
+        const ageRaw = Array.isArray(meta?.age) ? meta?.age[0] : meta?.age;
         results.push({
-          title: meta?.title || new URL(item.url).hostname,
+          title: item.title || meta?.title || new URL(item.url).hostname,
           url: item.url,
-          description: snippets[0]?.text?.slice(0, 300) || '',
-          content: content || undefined,
-          age: meta?.age,
+          description: texts[0]?.slice(0, 300) || meta?.snippet || '',
+          content: texts.length > 0 ? texts.join('\n\n') : undefined,
+          age: typeof ageRaw === 'string' ? ageRaw : undefined,
         });
       }
       const elapsed = Date.now() - t0;
