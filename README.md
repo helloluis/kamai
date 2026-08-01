@@ -20,7 +20,7 @@ Public URL: `https://kamai.minai.work` — LLM-facing integration spec: [`skill.
 | `POST /api/v1/search/image` | credits | Brave image search proxy |
 | `POST /api/v1/brochure/generate` | credits | Generate a PDF brochure from structured content |
 | `GET /api/v1/brochure/:id/download` | — | Download a generated PDF |
-| `GET /api/v1/brochure/templates` | credits | List brochure templates |
+| `GET /api/v1/brochure/templates` | — | List brochure templates |
 | `PATCH /api/v1/brochure/:id` | credits | Update and re-render a brochure |
 | `POST /api/v1/session` | rate-limited | Create an explicit browser session |
 | `GET/DELETE /api/v1/session/:id` | rate-limited | Session status / destroy |

@@ -17,6 +17,9 @@ import type { GenerateRequest, UpdateRequest, BrochureContent } from '../../broc
 
 const router = Router();
 
+/** Public routes — no payment: template listing + PDF download (shareable links). */
+export const brochurePublic = Router();
+
 /** Compute expiry date from option string */
 function expiresAt(expiresIn?: string): string {
   const days = expiresIn === '7d' ? 7 : expiresIn === '14d' ? 14 : 30;
@@ -27,7 +30,7 @@ function expiresAt(expiresIn?: string): string {
 
 // ─── GET /templates — list available templates ───
 
-router.get('/templates', (_req, res) => {
+brochurePublic.get('/templates', (_req, res) => {
   res.json({ ok: true, templates: listTemplates() });
 });
 
@@ -147,7 +150,7 @@ router.patch('/:id', async (req, res) => {
 
 // ─── GET /:id/download — serve the PDF ───
 
-router.get('/:id/download', (req, res) => {
+brochurePublic.get('/:id/download', (req, res) => {
   const { id } = req.params;
   const record = getBrochure(id);
   if (!record) {

@@ -15,7 +15,7 @@ import depositRouter from './api/routes/deposit.js';
 import accountRouter from './api/routes/account.js';
 import healthRouter from './api/routes/health.js';
 import memoriesRouter, { closeMemoriesDb } from './api/routes/memories.js';
-import brochureRouter from './api/routes/brochure.js';
+import brochureRouter, { brochurePublic } from './api/routes/brochure.js';
 import searchRouter from './api/routes/search.js';
 import { shutdown } from './browser/index.js';
 import { closeCreditsDb } from './payment/credits.js';
@@ -47,6 +47,9 @@ app.use('/api/v1/browse/memories', rateLimit, memoriesRouter);
 
 // Protected routes — credit-based payment (identity via wallet or API key)
 app.use('/api/v1/browse', rateLimit, creditPayment(), browseRouter);
+// Brochure: templates + downloads are free/public (shareable links); generate + update are paid.
+// Public router is mounted first — unmatched requests (POST/PATCH) fall through to the paid router.
+app.use('/api/v1/brochure', rateLimit, brochurePublic);
 app.use('/api/v1/brochure', express.json({ limit: '10mb' }), rateLimit, creditPayment(PRICE_BROCHURE), brochureRouter);
 app.use('/api/v1/search', rateLimit, creditPayment(PRICE_SEARCH), searchRouter);
 app.use('/api/v1/session', rateLimit, sessionRouter);
