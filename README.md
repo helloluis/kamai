@@ -16,8 +16,8 @@ Public URL: `https://kamai.minai.work` — LLM-facing integration spec: [`skill.
 | Route | Auth | Description |
 |-------|------|-------------|
 | `POST /api/v1/browse` | credits | Browse a URL with optional actions; returns text, links, forms, memories |
-| `POST /api/v1/search/web` | credits | Brave web search (LLM Context API, falls back to standard) |
-| `POST /api/v1/search/image` | credits | Brave image search proxy |
+| `POST /api/v1/search/web` | credits | Web search — Serper (Google) primary, Brave fallback |
+| `POST /api/v1/search/image` | credits | Image search — Serper primary, Brave fallback |
 | `POST /api/v1/brochure/generate` | credits | Generate a PDF brochure from structured content |
 | `GET /api/v1/brochure/:id/download` | — | Download a generated PDF |
 | `GET /api/v1/brochure/templates` | — | List brochure templates |

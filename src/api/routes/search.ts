@@ -1,10 +1,11 @@
 /**
- * POST /api/v1/search/web   — Brave LLM Context API (web search optimised for LLMs)
- * POST /api/v1/search/image — Brave Image Search API
+ * POST /api/v1/search/web   — web search (LLM-optimised when Brave handles it)
+ * POST /api/v1/search/image — image search
  *
- * Thin proxy over the Brave Search API. Kamai holds a paid Brave subscription
- * so callers can fire bursty searches without hitting the 1 req/sec free-plan
- * rate limit, and so individual app API keys never need to be distributed.
+ * Provider order: Serper (Google) is PRIMARY; Brave is the fallback when
+ * Serper errors, times out, or isn't configured. Brave /web itself tries the
+ * LLM Context API first, then the standard Web Search API. One paid
+ * subscription per provider lives on kamai so callers never manage keys.
  *
  * Auth + billing: same `creditPayment(PRICE_SEARCH)` middleware as /browse.
  */
@@ -12,8 +13,29 @@ import { Router } from 'express';
 
 const router = Router();
 
+const SERPER_API_KEY = process.env.SERPER_API_KEY || '';
+const SERPER_BASE = 'https://google.serper.dev';
 const BRAVE_API_KEY = process.env.BRAVE_API_KEY || '';
 const BRAVE_BASE = 'https://api.search.brave.com/res/v1';
+
+// ─── Serper response types ───
+
+interface SerperWebResponse {
+  organic?: Array<{ title?: string; link?: string; snippet?: string; date?: string }>;
+}
+
+interface SerperImageResponse {
+  images?: Array<{
+    title?: string;
+    link?: string;
+    imageUrl?: string;
+    thumbnailUrl?: string;
+    imageWidth?: number;
+    imageHeight?: number;
+    source?: string;
+    domain?: string;
+  }>;
+}
 
 // ─── Brave response types (we forward verbatim, but type the key fields) ───
 
@@ -65,11 +87,21 @@ async function braveFetch(url: string): Promise<Response> {
   });
 }
 
+/** Serper call with a hard timeout so an outage fails fast into the Brave fallback. */
+async function serperFetch(path: string, body: Record<string, unknown>): Promise<Response> {
+  return fetch(`${SERPER_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'X-API-KEY': SERPER_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+}
+
 // ─── /web — LLM-optimised search, falls back to legacy Web Search on error ───
 
 router.post('/web', async (req, res) => {
-  if (!BRAVE_API_KEY) {
-    res.status(503).json({ ok: false, error: 'Brave search not configured on kamai server (BRAVE_API_KEY missing)' });
+  if (!SERPER_API_KEY && !BRAVE_API_KEY) {
+    res.status(503).json({ ok: false, error: 'Search not configured on kamai server (SERPER_API_KEY and BRAVE_API_KEY missing)' });
     return;
   }
 
@@ -98,6 +130,47 @@ router.post('/web', async (req, res) => {
   if (typeof country === 'string') llmParams.set('country', country);
 
   console.log(`[Search/web] ${ts} | ${ip} | REQ "${queryStr}"`);
+
+  // ── Serper (primary) ──
+  if (SERPER_API_KEY) {
+    try {
+      const body: Record<string, unknown> = { q: queryStr, num: requestedCount };
+      if (typeof country === 'string' && country && country.toUpperCase() !== 'ALL') {
+        body.gl = country.toLowerCase();
+      }
+      const freshnessMap: Record<string, string> = { pd: 'qdr:d', pw: 'qdr:w', pm: 'qdr:m', py: 'qdr:y' };
+      if (typeof freshness === 'string' && freshnessMap[freshness]) {
+        body.tbs = freshnessMap[freshness];
+      }
+
+      const serperResp = await serperFetch('/search', body);
+      if (serperResp.ok) {
+        const data = (await serperResp.json()) as SerperWebResponse;
+        const results = (Array.isArray(data?.organic) ? data.organic : [])
+          .filter((r) => r?.link)
+          .map((r) => ({
+            title: r.title || '',
+            url: r.link as string,
+            description: r.snippet || '',
+            age: typeof r.date === 'string' ? r.date : undefined,
+          }));
+        const elapsed = Date.now() - t0;
+        console.log(`[Search/web] ${ts} | ${ip} | OK ${results.length} results | ${elapsed}ms (serper)`);
+        res.json({ ok: true, source: 'serper', query: queryStr, results: results.slice(0, requestedCount) });
+        return;
+      }
+      const errBody = await serperResp.text();
+      console.warn(`[Search/web] ${ts} | ${ip} | serper error ${serperResp.status}: ${errBody.slice(0, 200)} — falling back to Brave`);
+    } catch (err: any) {
+      console.warn(`[Search/web] ${ts} | ${ip} | serper exception: ${err.message} — falling back to Brave`);
+    }
+  }
+
+  // ── Brave (fallback) ──
+  if (!BRAVE_API_KEY) {
+    res.status(502).json({ ok: false, error: 'Serper search failed and no Brave fallback is configured' });
+    return;
+  }
 
   try {
     const llmResp = await braveFetch(`${BRAVE_BASE}/llm/context?${llmParams.toString()}`);
@@ -186,11 +259,11 @@ router.post('/web', async (req, res) => {
   }
 });
 
-// ─── /image — Brave Image Search ───
+// ─── /image — Serper (primary) → Brave Image Search (fallback) ───
 
 router.post('/image', async (req, res) => {
-  if (!BRAVE_API_KEY) {
-    res.status(503).json({ ok: false, error: 'Brave search not configured on kamai server' });
+  if (!SERPER_API_KEY && !BRAVE_API_KEY) {
+    res.status(503).json({ ok: false, error: 'Search not configured on kamai server (SERPER_API_KEY and BRAVE_API_KEY missing)' });
     return;
   }
 
@@ -208,6 +281,41 @@ router.post('/image', async (req, res) => {
   const ip = callerIp(req);
   const t0 = Date.now();
   console.log(`[Search/image] ${ts} | ${ip} | REQ "${queryStr}"`);
+
+  // ── Serper (primary) ──
+  if (SERPER_API_KEY) {
+    try {
+      const serperResp = await serperFetch('/images', { q: queryStr, num: requestedCount });
+      if (serperResp.ok) {
+        const data = (await serperResp.json()) as SerperImageResponse;
+        const results = (Array.isArray(data?.images) ? data.images : [])
+          .filter((i) => i?.imageUrl)
+          .map((i) => ({
+            title: i.title || '',
+            url: i.link || '',
+            imageUrl: i.imageUrl as string,
+            thumbnailUrl: i.thumbnailUrl || (i.imageUrl as string),
+            width: i.imageWidth,
+            height: i.imageHeight,
+            source: i.domain || i.source || '',
+          }));
+        const elapsed = Date.now() - t0;
+        console.log(`[Search/image] ${ts} | ${ip} | OK ${results.length} results | ${elapsed}ms (serper)`);
+        res.json({ ok: true, source: 'serper', query: queryStr, results: results.slice(0, requestedCount) });
+        return;
+      }
+      const errBody = await serperResp.text();
+      console.warn(`[Search/image] ${ts} | ${ip} | serper error ${serperResp.status}: ${errBody.slice(0, 200)} — falling back to Brave`);
+    } catch (err: any) {
+      console.warn(`[Search/image] ${ts} | ${ip} | serper exception: ${err.message} — falling back to Brave`);
+    }
+  }
+
+  // ── Brave (fallback) ──
+  if (!BRAVE_API_KEY) {
+    res.status(502).json({ ok: false, error: 'Serper image search failed and no Brave fallback is configured' });
+    return;
+  }
 
   try {
     const params = new URLSearchParams({
@@ -240,8 +348,8 @@ router.post('/image', async (req, res) => {
         source: r.source || (r.url ? new URL(r.url).hostname : ''),
       }));
     const elapsed = Date.now() - t0;
-    console.log(`[Search/image] ${ts} | ${ip} | OK ${results.length} results | ${elapsed}ms`);
-    res.json({ ok: true, query: queryStr, results: results.slice(0, requestedCount) });
+    console.log(`[Search/image] ${ts} | ${ip} | OK ${results.length} results | ${elapsed}ms (brave)`);
+    res.json({ ok: true, source: 'brave', query: queryStr, results: results.slice(0, requestedCount) });
   } catch (err: any) {
     const elapsed = Date.now() - t0;
     console.error(`[Search/image] ${ts} | ${ip} | ERR ${err.message} | ${elapsed}ms`);

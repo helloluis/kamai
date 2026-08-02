@@ -61,7 +61,8 @@ export function landingPage(): string {
       <a href="https://github.com/helloluis/kamai">source</a>
     </p>
     <p class="sub" style="margin-top:10px">
-      kamai gives your agent a real Chromium browser, a Brave-backed search API, per-domain
+      kamai gives your agent a real Chromium browser, web &amp; image search
+      (Serper/Google primary, Brave fallback), per-domain
       memory, and PDF brochure generation — over plain HTTPS JSON. No SDK required.
     </p>
   </header>
@@ -160,15 +161,16 @@ export function landingPage(): string {
   </p>
 
   <h2 id="search">Search</h2>
-  <p>Brave Search proxy — one paid subscription on our side, so your app never manages Brave keys or rate limits.</p>
+  <p>Search proxy — Serper (Google) primary, Brave automatic fallback. Paid subscriptions live on our side, so your app never manages search keys or rate limits.</p>
   <p><span class="method">POST</span> <code>/api/v1/search/web</code> &nbsp;·&nbsp; legacy alias <code>/search/web</code></p>
   <pre>{ "q": "Tim Cook age", "count": 5, "country": "US" }
 
-// → { "ok": true, "source": "llm_context" | "web",
+// → { "ok": true, "source": "serper" | "llm_context" | "web",
 //     "results": [{ "title", "url", "description", "content"?, "age"? }] }</pre>
   <p class="note"><code>count</code> 1–20 (default 5) · <code>country</code> 2-letter code or <code>ALL</code> ·
   <code>freshness</code> <code>pd|pw|pm|py</code> · <code>maxTokens</code> context budget (default 4096).
-  Uses Brave's LLM Context API and falls back to standard web search automatically.</p>
+  Serper answers first; on any Serper failure kamai falls back to Brave
+  (LLM Context API with extracted <code>content</code>, then standard web search).</p>
   <p><span class="method">POST</span> <code>/api/v1/search/image</code> &nbsp;·&nbsp; legacy alias <code>/search/image</code></p>
   <pre>{ "q": "Eiffel Tower at night", "count": 10, "safesearch": "strict" }
 

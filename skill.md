@@ -352,9 +352,10 @@ Returns `Content-Type: application/pdf`.
 
 ## Web Search
 
-kamai proxies Brave Search so callers can run high-volume search without
-managing their own Brave subscription or hitting Brave's 1 req/sec free-plan
-rate limit. Two endpoints:
+kamai proxies web and image search so callers can run high-volume search
+without managing their own provider subscriptions or rate limits. **Serper
+(Google) is the primary provider; Brave is the automatic fallback** when
+Serper errors or is unavailable. Two endpoints:
 
 ### POST /api/v1/search/web
 
@@ -379,7 +380,7 @@ LLM-optimised web search — returns extracted page snippets plus source URLs.
 ```json
 {
   "ok": true,
-  "source": "llm_context",
+  "source": "serper",
   "query": "Tim Cook age",
   "results": [
     {
@@ -393,8 +394,11 @@ LLM-optimised web search — returns extracted page snippets plus source URLs.
 }
 ```
 
-If the LLM Context API is unavailable, kamai automatically falls back to
-the standard Brave Web Search API (response shape is the same, minus `content`).
+`source` tells you which provider answered: `serper` (Google via Serper),
+`llm_context` (Brave's LLM Context API — richest, includes extracted
+`content`), or `web` (Brave standard search, no `content`). Serper results
+have `description` but no `content`. The fallback chain is
+Serper → Brave LLM Context → Brave standard.
 
 ### POST /api/v1/search/image
 
