@@ -100,6 +100,11 @@ function callerIp(req: any): string {
   return (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'anonymous';
 }
 
+/** Accumulate provider-failure reasons — surfaced in the /adm dashboard's fallback-reason column. */
+function addUsageNote(res: any, note: string): void {
+  res.locals.usageNote = res.locals.usageNote ? `${res.locals.usageNote}; ${note}` : note;
+}
+
 async function braveFetch(url: string): Promise<Response> {
   return fetch(url, {
     headers: {
@@ -275,8 +280,10 @@ router.post('/web', async (req, res) => {
       }
       const errBody = await serperResp.text();
       console.warn(`[Search/web] ${ts} | ${ip} | serper error ${serperResp.status}: ${errBody.slice(0, 200)} — falling back to Brave`);
+      addUsageNote(res, `serper ${serperResp.status}`);
     } catch (err: any) {
       console.warn(`[Search/web] ${ts} | ${ip} | serper exception: ${err.message} — falling back to Brave`);
+      addUsageNote(res, `serper: ${err.message}`);
     }
   }
 
@@ -328,8 +335,10 @@ router.post('/web', async (req, res) => {
     // 5xx or rate limited → fall through to legacy web search
     const errBody = await llmResp.text();
     console.warn(`[Search/web] llm_context error ${llmResp.status}: ${errBody.slice(0, 200)} — falling back to web search`);
+    addUsageNote(res, `llm_context ${llmResp.status}`);
   } catch (err: any) {
     console.warn(`[Search/web] llm_context exception: ${err.message} — falling back`);
+    addUsageNote(res, `llm_context: ${err.message}`);
   }
 
   // Legacy fallback
@@ -393,8 +402,10 @@ router.post('/image', async (req, res) => {
       }
       const errBody = await serperResp.text();
       console.warn(`[Search/image] ${ts} | ${ip} | serper error ${serperResp.status}: ${errBody.slice(0, 200)} — falling back to Brave`);
+      addUsageNote(res, `serper ${serperResp.status}`);
     } catch (err: any) {
       console.warn(`[Search/image] ${ts} | ${ip} | serper exception: ${err.message} — falling back to Brave`);
+      addUsageNote(res, `serper: ${err.message}`);
     }
   }
 
@@ -556,8 +567,10 @@ router.post('/social', async (req, res) => {
       }
       const msg = data?.error?.message || `HTTP ${scResp.status}`;
       console.warn(`[Search/social] ${ts} | ${ip} | socialcrawl ${platform} error: ${String(msg).slice(0, 200)} — falling back`);
+      addUsageNote(res, `socialcrawl: ${String(msg).slice(0, 80)}`);
     } catch (err: any) {
       console.warn(`[Search/social] ${ts} | ${ip} | socialcrawl ${platform} exception: ${err.message} — falling back`);
+      addUsageNote(res, `socialcrawl: ${err.message}`);
     }
   }
 
@@ -565,6 +578,7 @@ router.post('/social', async (req, res) => {
   if (APIFY_SEARCH[platform] && APIFY_API_TOKEN) {
     if (!shouldAttemptActor(platform)) {
       console.warn(`[Search/social] ${ts} | ${ip} | apify ${platform} circuit open (failing, awaiting reprobe) — skipping`);
+      addUsageNote(res, 'apify skipped (circuit open)');
     } else {
       const tA = Date.now();
       const apify = await apifyActorSearch(platform, queryStr, requestedCount, freshnessMs);
@@ -583,6 +597,7 @@ router.post('/social', async (req, res) => {
         return;
       }
       console.warn(`[Search/social] ${ts} | ${ip} | apify ${platform} error: ${apify.error.slice(0, 200)} — falling back`);
+      addUsageNote(res, `apify: ${apify.error.slice(0, 80)}`);
     }
   }
 

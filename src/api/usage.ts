@@ -44,9 +44,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_request_log_app ON request_log (app, created_at);
 `);
 
+try {
+  db.exec('ALTER TABLE request_log ADD COLUMN note TEXT'); // provider fallback reasons
+} catch { /* column already exists */ }
+
 const stmtInsert = db.prepare(
-  `INSERT INTO request_log (app, endpoint, detail, source, results, charged_usd, upstream_usd, status)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  `INSERT INTO request_log (app, endpoint, detail, source, results, charged_usd, upstream_usd, status, note)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 );
 
 // ─── Upstream cost estimates ───
@@ -133,6 +137,7 @@ export function usageMiddleware(req: Request, res: Response, next: NextFunction)
         (res.locals.chargedUsd as number) ?? 0,
         u.upstream ?? 0,
         res.statusCode,
+        ((res.locals.usageNote as string) ?? null)?.slice(0, 200),
       );
     } catch {
       // Analytics must never break a request.
@@ -180,7 +185,7 @@ interface SummaryRow { app: string; requests: number; charged: number; upstream:
 interface BreakdownRow { app: string; endpoint: string; requests: number; charged: number; upstream: number }
 interface RecentRow {
   created_at: string; app: string; endpoint: string; detail: string | null;
-  source: string | null; results: number | null; charged_usd: number; upstream_usd: number; status: number;
+  source: string | null; results: number | null; charged_usd: number; upstream_usd: number; status: number; note: string | null;
 }
 interface TotalsRow { requests: number; charged: number; upstream: number }
 
@@ -197,7 +202,7 @@ function queries() {
      GROUP BY app, endpoint ORDER BY app, upstream DESC`,
   ).all() as BreakdownRow[];
   const recent = db.prepare(
-    `SELECT created_at, app, endpoint, detail, source, results, charged_usd, upstream_usd, status
+    `SELECT created_at, app, endpoint, detail, source, results, charged_usd, upstream_usd, status, note
      FROM request_log ORDER BY id DESC LIMIT 100`,
   ).all() as RecentRow[];
   const totals = db.prepare(
@@ -236,7 +241,8 @@ admRouter.get('/', (_req, res) => {
     `<tr><td class="dim">${esc(r.created_at)}</td><td>${esc(r.app)}</td><td><code>${esc(r.endpoint)}</code></td>
      <td class="dim">${esc(r.detail)}</td><td class="dim">${esc(r.source)}</td>
      <td class="num">${r.results ?? ''}</td><td class="num">${usd(r.charged_usd)}</td>
-     <td class="num">${usd(r.upstream_usd)}</td><td class="num">${r.status}</td></tr>`,
+     <td class="num">${usd(r.upstream_usd)}</td><td class="num">${r.status}</td>
+     <td class="dim">${esc(r.note)}</td></tr>`,
   ).join('');
 
   res.type('html').send(`<!doctype html>
@@ -274,8 +280,8 @@ ${summaryRows || '<tr><td colspan="6" class="dim">No requests logged yet</td></t
 ${breakdownRows || '<tr><td colspan="5" class="dim">No requests in the last 30 days</td></tr>'}</table>
 
 <h2>Recent requests</h2>
-<table><tr><th>Time (UTC)</th><th>App</th><th>Endpoint</th><th>Detail</th><th>Provider</th><th class="num">Results</th><th class="num">Charged</th><th class="num">Upstream</th><th class="num">Status</th></tr>
-${recentRows || '<tr><td colspan="9" class="dim">No requests logged yet</td></tr>'}</table>
+<table><tr><th>Time (UTC)</th><th>App</th><th>Endpoint</th><th>Detail</th><th>Provider</th><th class="num">Results</th><th class="num">Charged</th><th class="num">Upstream</th><th class="num">Status</th><th>Fallback reason</th></tr>
+${recentRows || '<tr><td colspan="10" class="dim">No requests logged yet</td></tr>'}</table>
 
 <p class="note">Upstream $ are estimates from provider list prices — actual billing lives in each provider's console.
 Sister apps are charged $0 (they bypass payment), so their rows show pure cost. Data starts accumulating at deploy time; JSON at <code>/adm/data.json</code>.</p>
