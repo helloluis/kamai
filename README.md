@@ -1,6 +1,6 @@
 # kamai
 
-Headless browser and search backend for LLM agentic apps. Express + Playwright (Chromium) with per-domain memory, session persistence, a Brave Search proxy, and USDC micropayments on Celo.
+Headless browser and search backend for LLM agentic apps. Express + Playwright (Chromium) with per-domain memory, session persistence, web/image/social search with automatic provider failover, and USDC micropayments on Celo.
 
 Public URL: `https://kamai.minai.work` — LLM-facing integration spec: [`skill.md`](skill.md) (also served at `/skill.md`).
 
@@ -16,8 +16,9 @@ Public URL: `https://kamai.minai.work` — LLM-facing integration spec: [`skill.
 | Route | Auth | Description |
 |-------|------|-------------|
 | `POST /api/v1/browse` | credits | Browse a URL with optional actions; returns text, links, forms, memories |
-| `POST /api/v1/search/web` | credits | Web search — Serper (Google) primary, Brave fallback |
-| `POST /api/v1/search/image` | credits | Image search — Serper primary, Brave fallback |
+| `POST /api/v1/search/web` | credits | Web search — multi-provider with automatic failover |
+| `POST /api/v1/search/image` | credits | Image search — multi-provider with automatic failover |
+| `POST /api/v1/search/social` | credits | Social search: reddit, linkedin, tiktok, youtube, threads, pinterest, facebook events |
 | `POST /api/v1/brochure/generate` | credits | Generate a PDF brochure from structured content |
 | `GET /api/v1/brochure/:id/download` | — | Download a generated PDF |
 | `GET /api/v1/brochure/templates` | — | List brochure templates |
@@ -66,7 +67,7 @@ npm run build
 pm2 restart kamai        # runs dist/index.js; PORT/HOST come from .env
 ```
 
-First-time env setup: copy `.env.example` to `.env` and fill in `BRAVE_API_KEY`, `SISTER_API_KEYS`, `WALLET_SEED`, `PAYMENT_RECIPIENT_ADDRESS`.
+First-time env setup: copy `.env.example` to `.env` and fill in `SERPER_API_KEY`, `BRAVE_API_KEY`, `SOCIALCRAWL_API_KEY`, `SISTER_API_KEYS`, `WALLET_SEED`, `PAYMENT_RECIPIENT_ADDRESS`.
 
 ## Project structure
 

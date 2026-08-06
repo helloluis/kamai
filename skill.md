@@ -352,10 +352,9 @@ Returns `Content-Type: application/pdf`.
 
 ## Web Search
 
-kamai proxies web and image search so callers can run high-volume search
-without managing their own provider subscriptions or rate limits. **Serper
-(Google) is the primary provider; Brave is the automatic fallback** when
-Serper errors or is unavailable. Two endpoints:
+kamai proxies web, image, and social search so callers can run high-volume
+search without managing their own provider subscriptions or rate limits.
+Multiple backends with automatic failover — no keys to manage. Endpoints:
 
 ### POST /api/v1/search/web
 
@@ -394,11 +393,9 @@ LLM-optimised web search — returns extracted page snippets plus source URLs.
 }
 ```
 
-`source` tells you which provider answered: `serper` (Google via Serper),
-`llm_context` (Brave's LLM Context API — richest, includes extracted
-`content`), or `web` (Brave standard search, no `content`). Serper results
-have `description` but no `content`. The fallback chain is
-Serper → Brave LLM Context → Brave standard.
+`source` identifies which backend answered — failover between providers is
+automatic. When `content` is present it contains extracted page text;
+otherwise results carry only the `description` snippet.
 
 ### POST /api/v1/search/image
 
@@ -437,12 +434,69 @@ Image search — returns direct image URLs, thumbnails, and source pages.
 }
 ```
 
+### POST /api/v1/search/social
+
+Social platform search — brand mentions, competitor tracking, community
+research. One request shape for every platform.
+
+**Request:**
+```json
+{
+  "platform": "reddit",
+  "q": "your brand",
+  "sort": "new",
+  "timeframe": "week",
+  "count": 10
+}
+```
+
+**Parameters:**
+- `platform` (required) — `reddit`, `linkedin`, `tiktok`, `youtube`,
+  `threads`, `pinterest`, or `facebook` (Facebook = events search only; no
+  provider exposes organic Facebook post search)
+- `q` (required) — search query
+- `sort` (optional) — reddit: `relevance|new|top|comment_count`; linkedin: `relevance|date`
+- `timeframe` (optional) — reddit: `day|week|month|year|all`; linkedin: `day|week|month`
+- `count` (optional) — max results, default 10, max 50
+- `cursor` (optional) — pass the previous response's `nextCursor` to page
+
+**Response:**
+```json
+{
+  "ok": true,
+  "source": "social",
+  "platform": "reddit",
+  "query": "your brand",
+  "results": [
+    {
+      "id": "1vcrpje",
+      "url": "https://www.reddit.com/r/Bitcoin/comments/...",
+      "text": "post text...",
+      "author": "username",
+      "publishedAt": "2026-08-01T12:00:00.000Z",
+      "likes": 42,
+      "comments": 12,
+      "shares": null,
+      "views": null,
+      "meta": { "subreddit": "Bitcoin" }
+    }
+  ],
+  "nextCursor": "...",
+  "hasMore": true
+}
+```
+
+If the social backend is unavailable, reddit/linkedin/facebook queries
+automatically fall back to a site-scoped web search (`source: "web"`) —
+results then contain only `url` + `text` snippet.
+
 ### Cost
 
 | Endpoint | Cost |
 |----------|------|
 | `/search/web` | $0.003 |
 | `/search/image` | $0.003 |
+| `/search/social` | $0.003 |
 
 Sister apps get the standard 50% discount.
 

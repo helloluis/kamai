@@ -61,8 +61,8 @@ export function landingPage(): string {
       <a href="https://github.com/helloluis/kamai">source</a>
     </p>
     <p class="sub" style="margin-top:10px">
-      kamai gives your agent a real Chromium browser, web &amp; image search
-      (Serper/Google primary, Brave fallback), per-domain
+      kamai gives your agent a real Chromium browser, web, image &amp; social
+      search with automatic provider failover, per-domain
       memory, and PDF brochure generation — over plain HTTPS JSON. No SDK required.
     </p>
   </header>
@@ -161,22 +161,44 @@ export function landingPage(): string {
   </p>
 
   <h2 id="search">Search</h2>
-  <p>Search proxy — Serper (Google) primary, Brave automatic fallback. Paid subscriptions live on our side, so your app never manages search keys or rate limits.</p>
+  <p>Web and image search across multiple premium providers with automatic failover — one API, no search keys to manage on your side.</p>
   <p><span class="method">POST</span> <code>/api/v1/search/web</code> &nbsp;·&nbsp; legacy alias <code>/search/web</code></p>
   <pre>{ "q": "Tim Cook age", "count": 5, "country": "US" }
 
-// → { "ok": true, "source": "serper" | "llm_context" | "web",
+// → { "ok": true, "source": "web",
 //     "results": [{ "title", "url", "description", "content"?, "age"? }] }</pre>
   <p class="note"><code>count</code> 1–20 (default 5) · <code>country</code> 2-letter code or <code>ALL</code> ·
   <code>freshness</code> <code>pd|pw|pm|py</code> · <code>maxTokens</code> context budget (default 4096).
-  Serper answers first; on any Serper failure kamai falls back to Brave
-  (LLM Context API with extracted <code>content</code>, then standard web search).</p>
+  <code>source</code> identifies which backend answered — failover is automatic.
+  When available, results include extracted page <code>content</code>.</p>
   <p><span class="method">POST</span> <code>/api/v1/search/image</code> &nbsp;·&nbsp; legacy alias <code>/search/image</code></p>
   <pre>{ "q": "Eiffel Tower at night", "count": 10, "safesearch": "strict" }
 
 // → { "ok": true, "results": [{ "title", "url", "imageUrl", "thumbnailUrl",
 //     "width", "height", "source" }] }</pre>
   <p class="note"><code>count</code> 1–50 (default 5) · <code>safesearch</code> <code>strict</code> (default) or <code>off</code>.</p>
+
+  <h3>Social search</h3>
+  <p><span class="method">POST</span> <code>/api/v1/search/social</code> &nbsp;·&nbsp; legacy alias <code>/search/social</code></p>
+  <p>
+    Keyword search across social platforms — brand mentions, competitor tracking, community
+    research. One request shape for every platform; results are normalized to one schema.
+  </p>
+  <pre>{ "platform": "reddit", "q": "your brand", "sort": "new", "timeframe": "week" }
+
+// → { "ok": true, "source": "social", "platform": "reddit",
+//     "results": [{ "id", "url", "text", "author", "publishedAt",
+//                   "likes", "comments", "shares", "views", "meta"? }],
+//     "nextCursor": "…", "hasMore": true }</pre>
+  <table>
+    <tr><th>Platform</th><th>Notes</th></tr>
+    <tr><td><code>reddit</code></td><td>Full post search · sort: relevance|new|top|comment_count · timeframe: day|week|month|year|all</td></tr>
+    <tr><td><code>linkedin</code></td><td>Public post search · sort: relevance|date · timeframe: day|week|month</td></tr>
+    <tr><td><code>tiktok</code> · <code>youtube</code> · <code>threads</code> · <code>pinterest</code></td><td>Keyword search</td></tr>
+    <tr><td><code>facebook</code></td><td>Events search — organic post search is not exposed by any provider</td></tr>
+  </table>
+  <p class="note">Page through results by passing <code>nextCursor</code> back as <code>cursor</code>.
+  If the social backend is unavailable, Reddit/LinkedIn/Facebook queries automatically fall back to a site-scoped web search (<code>source: "web"</code>).</p>
 
   <h2 id="memories">Domain memories</h2>
   <p>
@@ -226,7 +248,7 @@ export function landingPage(): string {
   <table>
     <tr><th></th><th>Route</th><th>Auth</th></tr>
     <tr><td><span class="method">POST</span></td><td><code>/api/v1/browse</code></td><td>key / wallet <span class="note">(legacy /browse: none)</span></td></tr>
-    <tr><td><span class="method">POST</span></td><td><code>/api/v1/search/web</code> · <code>/api/v1/search/image</code></td><td>key / wallet <span class="note">(legacy /search/*: none)</span></td></tr>
+    <tr><td><span class="method">POST</span></td><td><code>/api/v1/search/web</code> · <code>/api/v1/search/image</code> · <code>/api/v1/search/social</code></td><td>key / wallet <span class="note">(legacy /search/*: none)</span></td></tr>
     <tr><td><span class="method">GET·POST·DEL</span></td><td><code>/browse/memories</code> · <code>/api/v1/browse/memories</code></td><td>none</td></tr>
     <tr><td><span class="method">POST</span></td><td><code>/api/v1/brochure/generate</code></td><td>key / wallet</td></tr>
     <tr><td><span class="method">PATCH</span></td><td><code>/api/v1/brochure/:id</code></td><td>key / wallet</td></tr>
