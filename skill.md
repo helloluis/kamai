@@ -452,8 +452,8 @@ research. One request shape for every platform.
 
 **Parameters:**
 - `platform` (required) — `reddit`, `linkedin`, `tiktok`, `youtube`,
-  `threads`, `pinterest`, or `facebook` (Facebook = events search only; no
-  provider exposes organic Facebook post search)
+  `threads`, `pinterest`, `facebook` (public post search — runs live, so
+  expect 20–60s response times; public content only), or `facebook-events`
 - `q` (required) — search query
 - `sort` (optional) — reddit: `relevance|new|top|comment_count`; linkedin: `relevance|date`
 - `timeframe` (optional) — reddit: `day|week|month|year|all`; linkedin: `day|week|month`

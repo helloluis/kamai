@@ -195,7 +195,8 @@ export function landingPage(): string {
     <tr><td><code>reddit</code></td><td>Full post search · sort: relevance|new|top|comment_count · timeframe: day|week|month|year|all</td></tr>
     <tr><td><code>linkedin</code></td><td>Public post search · sort: relevance|date · timeframe: day|week|month</td></tr>
     <tr><td><code>tiktok</code> · <code>youtube</code> · <code>threads</code> · <code>pinterest</code></td><td>Keyword search</td></tr>
-    <tr><td><code>facebook</code></td><td>Events search — organic post search is not exposed by any provider</td></tr>
+    <tr><td><code>facebook</code></td><td>Public post search — runs live, so expect 20–60s response times; public content only</td></tr>
+    <tr><td><code>facebook-events</code></td><td>Events search</td></tr>
   </table>
   <p class="note">Page through results by passing <code>nextCursor</code> back as <code>cursor</code>.
   If the social backend is unavailable, Reddit/LinkedIn/Facebook queries automatically fall back to a site-scoped web search (<code>source: "web"</code>).</p>

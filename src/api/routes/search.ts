@@ -2,13 +2,17 @@
  * POST /api/v1/search/web   — web search (LLM-optimised when Brave handles it)
  * POST /api/v1/search/image — image search
  * POST /api/v1/search/social — social platform search (reddit, linkedin, tiktok,
- *                              youtube, threads, pinterest, facebook events)
+ *                              youtube, threads, pinterest, facebook posts,
+ *                              facebook events)
  *
  * Provider order: Serper (Google) is PRIMARY; Brave is the fallback when
  * Serper errors, times out, or isn't configured. Brave /web itself tries the
  * LLM Context API first, then the standard Web Search API. One paid
  * subscription per provider lives on kamai so callers never manage keys.
  * Social search: SocialCrawl primary, Brave site:-query fallback where sensible.
+ * Facebook public post keyword search goes through an Apify actor (the only
+ * provider ecosystem with real FB post search); Brave site:facebook.com is
+ * its fallback.
  *
  * Auth + billing: same `creditPayment(PRICE_SEARCH)` middleware as /browse.
  */
@@ -147,15 +151,16 @@ const SOCIALCRAWL_API_KEY = process.env.SOCIALCRAWL_API_KEY || '';
 const SOCIALCRAWL_BASE = 'https://www.socialcrawl.dev';
 
 /** Platform → SocialCrawl search endpoint + param mapping. cursorParam is how each endpoint pages. */
-const SOCIAL_PLATFORMS: Record<string, { path: string; sortParam?: string; timeframeParam?: string; cursorParam?: string; site?: string }> = {
+const SOCIAL_PLATFORMS: Record<string, { path: string; sortParam?: string; timeframeParam?: string; cursorParam?: string; site?: string; apifyPosts?: boolean }> = {
   reddit:    { path: '/v1/reddit/search',         sortParam: 'sort',    timeframeParam: 'timeframe',   cursorParam: 'after',  site: 'reddit.com' },
   linkedin:  { path: '/v1/linkedin/search/posts', sortParam: 'sort_by', timeframeParam: 'date_posted', cursorParam: 'page',   site: 'linkedin.com' },
   tiktok:    { path: '/v1/tiktok/search',         cursorParam: 'cursor' },
   youtube:   { path: '/v1/youtube/search',        cursorParam: 'cursor' },
   threads:   { path: '/v1/threads/search',        cursorParam: 'cursor' },
   pinterest: { path: '/v1/pinterest/search',      cursorParam: 'cursor' },
-  // Facebook has no organic post keyword search (no provider has one) — events only.
-  facebook:  { path: '/v1/facebook/events/search', site: 'facebook.com' },
+  // Facebook public post keyword search — served by an Apify actor below, not SocialCrawl.
+  facebook:  { path: '', site: 'facebook.com', apifyPosts: true },
+  'facebook-events': { path: '/v1/facebook/events/search', site: 'facebook.com' },
 };
 
 async function socialcrawlFetch(path: string, params: URLSearchParams): Promise<Response> {
@@ -163,6 +168,67 @@ async function socialcrawlFetch(path: string, params: URLSearchParams): Promise<
     headers: { 'x-api-key': SOCIALCRAWL_API_KEY, Accept: 'application/json' },
     signal: AbortSignal.timeout(20_000), // social endpoints can be slow on cache miss
   });
+}
+
+// ─── Facebook post search (Apify actor) ───
+
+const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN || '';
+const APIFY_BASE = 'https://api.apify.com/v2';
+/** Actor is env-swappable — any FB keyword-search actor with postUrl/text-style output works. */
+const APIFY_FB_SEARCH_ACTOR = process.env.APIFY_FB_SEARCH_ACTOR || 'memo23~facebook-search-scraper';
+
+/**
+ * Run the FB search actor synchronously and normalize to the /social result shape.
+ * Field mapping tolerates both memo23 (camelCase) and alien_force (snake_case)
+ * actor outputs so the actor can be swapped via APIFY_FB_SEARCH_ACTOR.
+ */
+async function apifyFacebookSearch(
+  queryStr: string,
+  count: number,
+): Promise<
+  | { ok: true; results: Array<{ id: string | null; url: string | null; text: string | null; author: string | null; publishedAt: string | null; likes: number | null; comments: number | null; shares: number | null; views: number | null; meta?: unknown }> }
+  | { ok: false; status: number; error: string }
+> {
+  try {
+    const resp = await fetch(
+      `${APIFY_BASE}/acts/${APIFY_FB_SEARCH_ACTOR}/run-sync-get-dataset-items?token=${APIFY_API_TOKEN}&timeout=100`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ searchType: 'posts', searchQueries: [queryStr], maxItems: count }),
+        signal: AbortSignal.timeout(120_000), // actor cold start + guest-token bootstrap is slow
+      },
+    );
+    if (!resp.ok) {
+      const txt = await resp.text();
+      return { ok: false, status: resp.status >= 500 ? 502 : resp.status, error: `Apify actor returned ${resp.status}: ${txt.slice(0, 200)}` };
+    }
+    const items: any[] = (await resp.json()) as any[];
+    const results = (Array.isArray(items) ? items : [])
+      .map((it: any) => {
+        const url = it?.postUrl || it?.post_url || it?.url || null;
+        if (!url) return null;
+        return {
+          id: it.postId || it.post_id || null,
+          url,
+          text: it.text || null,
+          author: it.authorName || it.author_username || it.name || null,
+          publishedAt:
+            it.creationTime ||
+            (typeof it.create_time === 'number' ? new Date(it.create_time).toISOString() : null),
+          likes: it.likeCount ?? it.like_count ?? null,
+          comments: it.commentCount ?? it.comment_count ?? null,
+          shares: it.shareCount ?? it.share_count ?? null,
+          views: it.viewCount ?? it.view_count ?? null,
+          meta: it.isVerified != null ? { isVerified: it.isVerified } : undefined,
+        };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null);
+    return { ok: true, results };
+  } catch (err: any) {
+    const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+    return { ok: false, status: isTimeout ? 504 : 500, error: err.message || 'Facebook search failed' };
+  }
 }
 
 // ─── /web — LLM-optimised search, falls back to legacy Web Search on error ───
@@ -398,7 +464,7 @@ router.post('/image', async (req, res) => {
 // ─── /social — social platform search (SocialCrawl primary, Brave site: fallback) ───
 
 router.post('/social', async (req, res) => {
-  if (!SOCIALCRAWL_API_KEY && !BRAVE_API_KEY) {
+  if (!SOCIALCRAWL_API_KEY && !BRAVE_API_KEY && !APIFY_API_TOKEN) {
     res.status(503).json({ ok: false, error: 'Social search not configured on kamai server' });
     return;
   }
@@ -426,8 +492,20 @@ router.post('/social', async (req, res) => {
   const t0 = Date.now();
   console.log(`[Search/social] ${ts} | ${ip} | REQ ${platform} "${queryStr}"`);
 
-  // ── SocialCrawl (primary) ──
-  if (SOCIALCRAWL_API_KEY) {
+  // ── Facebook public posts: Apify actor (primary) ──
+  if (spec.apifyPosts && APIFY_API_TOKEN) {
+    const apify = await apifyFacebookSearch(queryStr, requestedCount);
+    if (apify.ok) {
+      const elapsed = Date.now() - t0;
+      console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${apify.results.length} results | ${elapsed}ms (apify)`);
+      res.json({ ok: true, source: 'social', platform, query: queryStr, results: apify.results.slice(0, requestedCount) });
+      return;
+    }
+    console.warn(`[Search/social] ${ts} | ${ip} | apify ${platform} error: ${apify.error.slice(0, 200)} — falling back`);
+  }
+
+  // ── SocialCrawl (primary for the other platforms) ──
+  if (SOCIALCRAWL_API_KEY && spec.path) {
     try {
       const params = new URLSearchParams({ query: queryStr });
       if (typeof sort === 'string' && sort && spec.sortParam) params.set(spec.sortParam, sort);

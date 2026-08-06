@@ -18,7 +18,7 @@ Public URL: `https://kamai.minai.work` — LLM-facing integration spec: [`skill.
 | `POST /api/v1/browse` | credits | Browse a URL with optional actions; returns text, links, forms, memories |
 | `POST /api/v1/search/web` | credits | Web search — multi-provider with automatic failover |
 | `POST /api/v1/search/image` | credits | Image search — multi-provider with automatic failover |
-| `POST /api/v1/search/social` | credits | Social search: reddit, linkedin, tiktok, youtube, threads, pinterest, facebook events |
+| `POST /api/v1/search/social` | credits | Social search: reddit, linkedin, tiktok, youtube, threads, pinterest, facebook posts + events |
 | `POST /api/v1/brochure/generate` | credits | Generate a PDF brochure from structured content |
 | `GET /api/v1/brochure/:id/download` | — | Download a generated PDF |
 | `GET /api/v1/brochure/templates` | — | List brochure templates |
