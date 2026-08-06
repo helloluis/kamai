@@ -538,16 +538,19 @@ router.post('/social', async (req, res) => {
           let url = p.url || null;
           // Reddit items can arrive without a permalink — rebuild it from the post id
           if (!url && platform === 'reddit' && id) url = `https://www.reddit.com/comments/${id}`;
+          // Field names vary by platform: linkedin uses title/created_at/
+          // author.name/activity.num_*, reddit+tiktok use content.text/
+          // published_at/author.username/engagement.*. Take whichever exists.
           return {
             id,
             url,
-            text: p.content?.text || null,
-            author: p.author?.username || null,
-            publishedAt: p.published_at || null,
-            likes: p.engagement?.likes ?? null,
-            comments: p.engagement?.comments ?? null,
-            shares: p.engagement?.shares ?? null,
-            views: p.engagement?.views ?? null,
+            text: p.content?.text || p.title || p.text || null,
+            author: p.author?.username || p.author?.name || null,
+            publishedAt: p.published_at || p.created_at || null,
+            likes: p.engagement?.likes ?? p.activity?.num_likes ?? null,
+            comments: p.engagement?.comments ?? p.activity?.num_comments ?? null,
+            shares: p.engagement?.shares ?? p.activity?.num_shares ?? null,
+            views: p.engagement?.views ?? p.activity?.num_views ?? null,
             meta: p.ext || undefined,
           };
         }).filter(withinWindow);
