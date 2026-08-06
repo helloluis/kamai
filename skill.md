@@ -452,11 +452,15 @@ research. One request shape for every platform.
 
 **Parameters:**
 - `platform` (required) — `reddit`, `linkedin`, `tiktok`, `youtube`,
-  `threads`, `pinterest`, `facebook` (public post search — runs live, so
+  `threads`, `pinterest`, `instagram` (public reels keyword search — runs
+  live, expect 15–60s), `facebook` (public post search — runs live, so
   expect 20–60s response times; public content only), or `facebook-events`
 - `q` (required) — search query
 - `sort` (optional) — reddit: `relevance|new|top|comment_count`; linkedin: `relevance|date`
 - `timeframe` (optional) — reddit: `day|week|month|year|all`; linkedin: `day|week|month`
+- `freshness` (optional) — limit results by age: presets `pd|pw|pm|py` or
+  exact durations like `90min`, `2h`, `3d`, `1w`. The exact window is always
+  enforced server-side; tight windows may return fewer than `count` results.
 - `count` (optional) — max results, default 10, max 50
 - `cursor` (optional) — pass the previous response's `nextCursor` to page
 
@@ -486,9 +490,10 @@ research. One request shape for every platform.
 }
 ```
 
-If the social backend is unavailable, reddit/linkedin/facebook queries
-automatically fall back to a site-scoped web search (`source: "web"`) —
-results then contain only `url` + `text` snippet.
+If a platform's primary backend is unavailable, queries automatically fall
+back through secondary providers, then a site-scoped web search
+(`source: "web"`) where the platform indexes well — those results contain
+only `url` + `text` snippet.
 
 ### Cost
 

@@ -17,6 +17,7 @@ import healthRouter from './api/routes/health.js';
 import memoriesRouter, { closeMemoriesDb } from './api/routes/memories.js';
 import brochureRouter, { brochurePublic } from './api/routes/brochure.js';
 import searchRouter from './api/routes/search.js';
+import { searchOpsRouter, startActorHealthScheduler } from './api/apifySearch.js';
 import { shutdown } from './browser/index.js';
 import { landingPage } from './api/landing.js';
 import { closeCreditsDb } from './payment/credits.js';
@@ -52,6 +53,10 @@ app.use('/api/v1/browse', rateLimit, creditPayment(), browseRouter);
 // Public router is mounted first — unmatched requests (POST/PATCH) fall through to the paid router.
 app.use('/api/v1/brochure', rateLimit, brochurePublic);
 app.use('/api/v1/brochure', express.json({ limit: '10mb' }), rateLimit, creditPayment(PRICE_BROCHURE), brochureRouter);
+// Search ops (actor health) — sister-key gated, mounted BEFORE the paid search
+// router (prefix match would otherwise route it through creditPayment, and the
+// legacy free /search mount would expose actor IDs publicly).
+app.use('/api/v1/search/health', rateLimit, searchOpsRouter);
 app.use('/api/v1/search', rateLimit, creditPayment(PRICE_SEARCH), searchRouter);
 app.use('/api/v1/session', rateLimit, sessionRouter);
 
@@ -89,6 +94,10 @@ if (process.env.WALLET_SEED) {
 const CLEANUP_INTERVAL = 60 * 60 * 1000;
 const cleanupTimer = setInterval(cleanupExpired, CLEANUP_INTERVAL);
 cleanupExpired(); // run once at startup
+
+// Actor health — smoke-test every Apify search actor 60s after boot, then
+// every 72h. A failed actor is skipped by /search/social until it recovers.
+startActorHealthScheduler();
 
 // Start
 app.listen(PORT, HOST, () => {

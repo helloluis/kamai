@@ -168,7 +168,7 @@ export function landingPage(): string {
 // → { "ok": true, "source": "web",
 //     "results": [{ "title", "url", "description", "content"?, "age"? }] }</pre>
   <p class="note"><code>count</code> 1–20 (default 5) · <code>country</code> 2-letter code or <code>ALL</code> ·
-  <code>freshness</code> <code>pd|pw|pm|py</code> · <code>maxTokens</code> context budget (default 4096).
+  <code>freshness</code> <code>pd|pw|pm|py</code> or durations like <code>90min</code>, <code>2h</code>, <code>3d</code> · <code>maxTokens</code> context budget (default 4096).
   <code>source</code> identifies which backend answered — failover is automatic.
   When available, results include extracted page <code>content</code>.</p>
   <p><span class="method">POST</span> <code>/api/v1/search/image</code> &nbsp;·&nbsp; legacy alias <code>/search/image</code></p>
@@ -195,11 +195,16 @@ export function landingPage(): string {
     <tr><td><code>reddit</code></td><td>Full post search · sort: relevance|new|top|comment_count · timeframe: day|week|month|year|all</td></tr>
     <tr><td><code>linkedin</code></td><td>Public post search · sort: relevance|date · timeframe: day|week|month</td></tr>
     <tr><td><code>tiktok</code> · <code>youtube</code> · <code>threads</code> · <code>pinterest</code></td><td>Keyword search</td></tr>
+    <tr><td><code>instagram</code></td><td>Keyword search of public reels — runs live, expect 15–60s</td></tr>
     <tr><td><code>facebook</code></td><td>Public post search — runs live, so expect 20–60s response times; public content only</td></tr>
     <tr><td><code>facebook-events</code></td><td>Events search</td></tr>
   </table>
-  <p class="note">Page through results by passing <code>nextCursor</code> back as <code>cursor</code>.
-  If the social backend is unavailable, Reddit/LinkedIn/Facebook queries automatically fall back to a site-scoped web search (<code>source: "web"</code>).</p>
+  <p class="note"><code>freshness</code> limits results by age: presets <code>pd|pw|pm|py</code> or exact durations
+  like <code>90min</code>, <code>2h</code>, <code>3d</code>, <code>1w</code> — the exact window is always enforced server-side;
+  tight windows may return fewer than <code>count</code> results.
+  Page through results by passing <code>nextCursor</code> back as <code>cursor</code>.
+  If a platform's primary backend is unavailable, queries automatically fall back through secondary providers,
+  then a site-scoped web search (<code>source: "web"</code>) where the platform indexes well.</p>
 
   <h2 id="memories">Domain memories</h2>
   <p>

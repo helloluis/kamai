@@ -2,21 +2,36 @@
  * POST /api/v1/search/web   — web search (LLM-optimised when Brave handles it)
  * POST /api/v1/search/image — image search
  * POST /api/v1/search/social — social platform search (reddit, linkedin, tiktok,
- *                              youtube, threads, pinterest, facebook posts,
- *                              facebook events)
+ *                              youtube, threads, pinterest, instagram, facebook
+ *                              posts, facebook events)
  *
- * Provider order: Serper (Google) is PRIMARY; Brave is the fallback when
- * Serper errors, times out, or isn't configured. Brave /web itself tries the
- * LLM Context API first, then the standard Web Search API. One paid
- * subscription per provider lives on kamai so callers never manage keys.
- * Social search: SocialCrawl primary, Brave site:-query fallback where sensible.
- * Facebook public post keyword search goes through an Apify actor (the only
- * provider ecosystem with real FB post search); Brave site:facebook.com is
- * its fallback.
+ * Provider order: Serper (Google) is PRIMARY for web/image; Brave is the
+ * fallback when Serper errors, times out, or isn't configured. Brave /web
+ * itself tries the LLM Context API first, then the standard Web Search API.
+ * One paid subscription per provider lives on kamai so callers never manage
+ * keys.
+ *
+ * Social search is a per-platform chain (first success wins): SocialCrawl →
+ * Apify actor (registry + 72h health checks in src/api/apifySearch.ts) →
+ * Brave site:-scoped search. instagram is Apify-only; facebook posts are
+ * Apify-first; tiktok/linkedin use Apify as fallback.
+ *
+ * All endpoints accept freshness: pd|pw|pm|py or durations ("90min", "2h",
+ * "3d", "1w"). Social chains narrow natively where the provider allows, then
+ * enforce the exact window with a publishedAt post-filter.
  *
  * Auth + billing: same `creditPayment(PRICE_SEARCH)` middleware as /browse.
  */
 import { Router } from 'express';
+import {
+  APIFY_SEARCH,
+  APIFY_API_TOKEN,
+  apifyActorSearch,
+  shouldAttemptActor,
+  recordActorOutcome,
+  parseFreshness,
+  FRESHNESS_MS,
+} from '../apifySearch.js';
 
 const router = Router();
 
@@ -145,90 +160,45 @@ async function braveWebSearch(
   }
 }
 
-// ─── Social search (SocialCrawl unified social API) ───
+// ─── Social search ───
+//
+// Provider chain per platform (first success wins):
+//   1. SocialCrawl (where a path exists below)
+//   2. Apify actor (registry in src/api/apifySearch.ts; skipped when the
+//      72h health check has marked the actor degraded)
+//   3. Brave site:-scoped web search (where the platform indexes well)
 
 const SOCIALCRAWL_API_KEY = process.env.SOCIALCRAWL_API_KEY || '';
 const SOCIALCRAWL_BASE = 'https://www.socialcrawl.dev';
 
 /** Platform → SocialCrawl search endpoint + param mapping. cursorParam is how each endpoint pages. */
-const SOCIAL_PLATFORMS: Record<string, { path: string; sortParam?: string; timeframeParam?: string; cursorParam?: string; site?: string; apifyPosts?: boolean }> = {
-  reddit:    { path: '/v1/reddit/search',         sortParam: 'sort',    timeframeParam: 'timeframe',   cursorParam: 'after',  site: 'reddit.com' },
-  linkedin:  { path: '/v1/linkedin/search/posts', sortParam: 'sort_by', timeframeParam: 'date_posted', cursorParam: 'page',   site: 'linkedin.com' },
+const SOCIAL_PLATFORMS: Record<string, { path: string; sortParam?: string; timeframeParam?: string; cursorParam?: string }> = {
+  reddit:    { path: '/v1/reddit/search',         sortParam: 'sort',    timeframeParam: 'timeframe',   cursorParam: 'after' },
+  linkedin:  { path: '/v1/linkedin/search/posts', sortParam: 'sort_by', timeframeParam: 'date_posted', cursorParam: 'page' },
   tiktok:    { path: '/v1/tiktok/search',         cursorParam: 'cursor' },
   youtube:   { path: '/v1/youtube/search',        cursorParam: 'cursor' },
   threads:   { path: '/v1/threads/search',        cursorParam: 'cursor' },
   pinterest: { path: '/v1/pinterest/search',      cursorParam: 'cursor' },
-  // Facebook public post keyword search — served by an Apify actor below, not SocialCrawl.
-  facebook:  { path: '', site: 'facebook.com', apifyPosts: true },
-  'facebook-events': { path: '/v1/facebook/events/search', site: 'facebook.com' },
+  'facebook-events': { path: '/v1/facebook/events/search' },
 };
+
+/** Platforms worth a Brave site:-scoped last resort (Google indexes them decently). */
+const PLATFORM_SITES: Record<string, string> = {
+  reddit: 'reddit.com',
+  linkedin: 'linkedin.com',
+  facebook: 'facebook.com',
+  'facebook-events': 'facebook.com',
+  instagram: 'instagram.com',
+};
+
+/** Supported platforms = SocialCrawl-backed ∪ Apify-backed. */
+const SUPPORTED_PLATFORMS = [...new Set([...Object.keys(SOCIAL_PLATFORMS), ...Object.keys(APIFY_SEARCH)])];
 
 async function socialcrawlFetch(path: string, params: URLSearchParams): Promise<Response> {
   return fetch(`${SOCIALCRAWL_BASE}${path}?${params.toString()}`, {
     headers: { 'x-api-key': SOCIALCRAWL_API_KEY, Accept: 'application/json' },
     signal: AbortSignal.timeout(20_000), // social endpoints can be slow on cache miss
   });
-}
-
-// ─── Facebook post search (Apify actor) ───
-
-const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN || '';
-const APIFY_BASE = 'https://api.apify.com/v2';
-/** Actor is env-swappable — any FB keyword-search actor with postUrl/text-style output works. */
-const APIFY_FB_SEARCH_ACTOR = process.env.APIFY_FB_SEARCH_ACTOR || 'memo23~facebook-search-scraper';
-
-/**
- * Run the FB search actor synchronously and normalize to the /social result shape.
- * Field mapping tolerates both memo23 (camelCase) and alien_force (snake_case)
- * actor outputs so the actor can be swapped via APIFY_FB_SEARCH_ACTOR.
- */
-async function apifyFacebookSearch(
-  queryStr: string,
-  count: number,
-): Promise<
-  | { ok: true; results: Array<{ id: string | null; url: string | null; text: string | null; author: string | null; publishedAt: string | null; likes: number | null; comments: number | null; shares: number | null; views: number | null; meta?: unknown }> }
-  | { ok: false; status: number; error: string }
-> {
-  try {
-    const resp = await fetch(
-      `${APIFY_BASE}/acts/${APIFY_FB_SEARCH_ACTOR}/run-sync-get-dataset-items?token=${APIFY_API_TOKEN}&timeout=100`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ searchType: 'posts', searchQueries: [queryStr], maxItems: count }),
-        signal: AbortSignal.timeout(120_000), // actor cold start + guest-token bootstrap is slow
-      },
-    );
-    if (!resp.ok) {
-      const txt = await resp.text();
-      return { ok: false, status: resp.status >= 500 ? 502 : resp.status, error: `Apify actor returned ${resp.status}: ${txt.slice(0, 200)}` };
-    }
-    const items: any[] = (await resp.json()) as any[];
-    const results = (Array.isArray(items) ? items : [])
-      .map((it: any) => {
-        const url = it?.postUrl || it?.post_url || it?.url || null;
-        if (!url) return null;
-        return {
-          id: it.postId || it.post_id || null,
-          url,
-          text: it.text || null,
-          author: it.authorName || it.author_username || it.name || null,
-          publishedAt:
-            it.creationTime ||
-            (typeof it.create_time === 'number' ? new Date(it.create_time).toISOString() : null),
-          likes: it.likeCount ?? it.like_count ?? null,
-          comments: it.commentCount ?? it.comment_count ?? null,
-          shares: it.shareCount ?? it.share_count ?? null,
-          views: it.viewCount ?? it.view_count ?? null,
-          meta: it.isVerified != null ? { isVerified: it.isVerified } : undefined,
-        };
-      })
-      .filter((r): r is NonNullable<typeof r> => r !== null);
-    return { ok: true, results };
-  } catch (err: any) {
-    const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';
-    return { ok: false, status: isTimeout ? 504 : 500, error: err.message || 'Facebook search failed' };
-  }
 }
 
 // ─── /web — LLM-optimised search, falls back to legacy Web Search on error ───
@@ -250,6 +220,14 @@ router.post('/web', async (req, res) => {
   const ip = callerIp(req);
   const t0 = Date.now();
   const requestedCount = Math.min(Math.max(Number(count) || 5, 1), 20);
+
+  // freshness: pd|pw|pm|py or a duration ("90min", "2h", "3d", "1w") — snapped
+  // to the smallest containing preset for the providers' native filters.
+  const freshnessMsW = parseFreshness(freshness);
+  const webFreshness = freshnessMsW === null ? undefined
+    : freshnessMsW <= FRESHNESS_MS.pd ? 'pd'
+    : freshnessMsW <= FRESHNESS_MS.pw ? 'pw'
+    : freshnessMsW <= FRESHNESS_MS.pm ? 'pm' : 'py';
 
   // Try LLM Context API first
   const llmParams = new URLSearchParams({
@@ -273,8 +251,8 @@ router.post('/web', async (req, res) => {
         body.gl = country.toLowerCase();
       }
       const freshnessMap: Record<string, string> = { pd: 'qdr:d', pw: 'qdr:w', pm: 'qdr:m', py: 'qdr:y' };
-      if (typeof freshness === 'string' && freshnessMap[freshness]) {
-        body.tbs = freshnessMap[freshness];
+      if (webFreshness) {
+        body.tbs = freshnessMap[webFreshness];
       }
 
       const serperResp = await serperFetch('/search', body);
@@ -352,7 +330,7 @@ router.post('/web', async (req, res) => {
   }
 
   // Legacy fallback
-  const legacy = await braveWebSearch(queryStr, requestedCount, freshness, country);
+  const legacy = await braveWebSearch(queryStr, requestedCount, webFreshness, country);
   const elapsed = Date.now() - t0;
   if (legacy.ok) {
     console.log(`[Search/web] ${ts} | ${ip} | OK ${legacy.results.length} results | ${elapsed}ms (web fallback)`);
@@ -461,7 +439,7 @@ router.post('/image', async (req, res) => {
   }
 });
 
-// ─── /social — social platform search (SocialCrawl primary, Brave site: fallback) ───
+// ─── /social — tiered social search: SocialCrawl → Apify → Brave site: ───
 
 router.post('/social', async (req, res) => {
   if (!SOCIALCRAWL_API_KEY && !BRAVE_API_KEY && !APIFY_API_TOKEN) {
@@ -469,14 +447,14 @@ router.post('/social', async (req, res) => {
     return;
   }
 
-  const { platform: platformRaw, q, query, sort, timeframe, cursor, count } = req.body as Record<string, unknown>;
+  const { platform: platformRaw, q, query, sort, timeframe, cursor, count, freshness } = req.body as Record<string, unknown>;
   const platform = String(platformRaw || '').toLowerCase().trim();
   const queryStr = String(q || query || '').trim();
 
-  if (!platform || !SOCIAL_PLATFORMS[platform]) {
+  if (!platform || !SUPPORTED_PLATFORMS.includes(platform)) {
     res.status(400).json({
       ok: false,
-      error: `Missing or unknown "platform". Supported: ${Object.keys(SOCIAL_PLATFORMS).join(', ')}`,
+      error: `Missing or unknown "platform". Supported: ${SUPPORTED_PLATFORMS.join(', ')}`,
     });
     return;
   }
@@ -484,32 +462,46 @@ router.post('/social', async (req, res) => {
     res.status(400).json({ ok: false, error: 'Missing "q" field' });
     return;
   }
+  const freshnessMs = parseFreshness(freshness) ?? undefined;
+  if (freshness !== undefined && freshnessMs === undefined) {
+    res.status(400).json({ ok: false, error: 'Invalid "freshness" — use pd|pw|pm|py or a duration like "90min", "2h", "3d", "1w"' });
+    return;
+  }
 
-  const spec = SOCIAL_PLATFORMS[platform];
+  const spec = SOCIAL_PLATFORMS[platform]; // SocialCrawl tier (may not exist for this platform)
+  const site = PLATFORM_SITES[platform];   // Brave site: tier (may not exist)
   const requestedCount = Math.min(Math.max(Number(count) || 10, 1), 50);
   const ts = new Date().toISOString();
   const ip = callerIp(req);
   const t0 = Date.now();
-  console.log(`[Search/social] ${ts} | ${ip} | REQ ${platform} "${queryStr}"`);
+  console.log(`[Search/social] ${ts} | ${ip} | REQ ${platform} "${queryStr}"${freshnessMs ? ` fresh<${Math.round(freshnessMs / 60000)}min` : ''}`);
 
-  // ── Facebook public posts: Apify actor (primary) ──
-  if (spec.apifyPosts && APIFY_API_TOKEN) {
-    const apify = await apifyFacebookSearch(queryStr, requestedCount);
-    if (apify.ok) {
-      const elapsed = Date.now() - t0;
-      console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${apify.results.length} results | ${elapsed}ms (apify)`);
-      res.json({ ok: true, source: 'social', platform, query: queryStr, results: apify.results.slice(0, requestedCount) });
-      return;
-    }
-    console.warn(`[Search/social] ${ts} | ${ip} | apify ${platform} error: ${apify.error.slice(0, 200)} — falling back`);
-  }
+  // Exact-window post-filter. Native provider filters are coarser than the
+  // requested window (or absent), so every tier gets this pass. Items with
+  // no usable timestamp can't prove freshness and are dropped.
+  const withinWindow = (r: { publishedAt: string | null }): boolean => {
+    if (!freshnessMs) return true;
+    const t = r.publishedAt ? Date.parse(r.publishedAt) : NaN;
+    return !Number.isNaN(t) && t >= Date.now() - freshnessMs;
+  };
 
-  // ── SocialCrawl (primary for the other platforms) ──
-  if (SOCIALCRAWL_API_KEY && spec.path) {
+  // ── 1. SocialCrawl ──
+  if (spec && SOCIALCRAWL_API_KEY) {
     try {
       const params = new URLSearchParams({ query: queryStr });
       if (typeof sort === 'string' && sort && spec.sortParam) params.set(spec.sortParam, sort);
-      if (typeof timeframe === 'string' && timeframe && spec.timeframeParam) params.set(spec.timeframeParam, timeframe);
+      // freshness → native timeframe (closest bucket ≥ window). An explicit
+      // `timeframe` param wins, for backward compatibility. LinkedIn has no
+      // year bucket — leave native filtering off and rely on the post-filter.
+      const tf = typeof timeframe === 'string' && timeframe
+        ? timeframe
+        : freshnessMs
+          ? freshnessMs <= FRESHNESS_MS.pd ? 'day'
+            : freshnessMs <= FRESHNESS_MS.pw ? 'week'
+            : freshnessMs <= FRESHNESS_MS.pm ? 'month'
+            : platform === 'reddit' ? 'year' : undefined
+          : undefined;
+      if (tf && spec.timeframeParam) params.set(spec.timeframeParam, tf);
       if (typeof cursor === 'string' && cursor && spec.cursorParam) params.set(spec.cursorParam, cursor);
 
       const scResp = await socialcrawlFetch(spec.path, params);
@@ -535,7 +527,7 @@ router.post('/social', async (req, res) => {
             views: p.engagement?.views ?? null,
             meta: p.ext || undefined,
           };
-        });
+        }).filter(withinWindow);
         const elapsed = Date.now() - t0;
         console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${results.length} results | ${elapsed}ms (socialcrawl, ${data.credits_used ?? '?'}cr)`);
         res.json({
@@ -556,10 +548,34 @@ router.post('/social', async (req, res) => {
     }
   }
 
-  // ── Brave site: fallback (only for platforms Google indexes well) ──
-  if (spec.site && BRAVE_API_KEY) {
-    const siteQuery = `site:${spec.site} ${queryStr}`;
-    const fallback = await braveWebSearch(siteQuery, requestedCount);
+  // ── 2. Apify actor (circuit-broken actors are skipped until a probe window) ──
+  if (APIFY_SEARCH[platform] && APIFY_API_TOKEN) {
+    if (!shouldAttemptActor(platform)) {
+      console.warn(`[Search/social] ${ts} | ${ip} | apify ${platform} circuit open (failing, awaiting reprobe) — skipping`);
+    } else {
+      const tA = Date.now();
+      const apify = await apifyActorSearch(platform, queryStr, requestedCount, freshnessMs);
+      recordActorOutcome(platform, apify.ok, Date.now() - tA, apify.ok ? undefined : apify.error);
+      if (apify.ok) {
+        const elapsed = Date.now() - t0;
+        console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${apify.results.length} results | ${elapsed}ms (apify)`);
+        res.json({ ok: true, source: 'social', platform, query: queryStr, results: apify.results });
+        return;
+      }
+      console.warn(`[Search/social] ${ts} | ${ip} | apify ${platform} error: ${apify.error.slice(0, 200)} — falling back`);
+    }
+  }
+
+  // ── 3. Brave site: fallback ──
+  if (site && BRAVE_API_KEY) {
+    const siteQuery = `site:${site} ${queryStr}`;
+    // Brave only understands pd|pw|pm|py — snap the window to the closest
+    // preset containing it (its age strings are too fuzzy to post-filter).
+    const braveFreshness = !freshnessMs ? undefined
+      : freshnessMs <= FRESHNESS_MS.pd ? 'pd'
+      : freshnessMs <= FRESHNESS_MS.pw ? 'pw'
+      : freshnessMs <= FRESHNESS_MS.pm ? 'pm' : 'py';
+    const fallback = await braveWebSearch(siteQuery, requestedCount, braveFreshness);
     const elapsed = Date.now() - t0;
     if (fallback.ok) {
       console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${fallback.results.length} results | ${elapsed}ms (brave site fallback)`);
@@ -584,7 +600,7 @@ router.post('/social', async (req, res) => {
     return;
   }
 
-  res.status(502).json({ ok: false, error: `Social search unavailable for ${platform} (provider failed, no fallback configured)` });
+  res.status(502).json({ ok: false, error: `Social search unavailable for ${platform} (all providers failed or unconfigured)` });
 });
 
 export default router;
