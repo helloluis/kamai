@@ -61,6 +61,21 @@ const FRESHNESS_UNITS: Record<string, number> = {
 };
 
 /**
+ * Smallest harvestapi postedLimit bucket that fully contains the window.
+ * Buckets are coarser than the requested window on purpose — the exact
+ * post-filter in apifyActorSearch still trims to the precise cutoff.
+ */
+function linkedinPostedLimit(ms: number): string {
+  if (ms <= 3_600_000) return '1h';
+  if (ms <= 86_400_000) return '24h';
+  if (ms <= 604_800_000) return 'week';
+  if (ms <= 2_592_000_000) return 'month';
+  if (ms <= 7_776_000_000) return '3months';
+  if (ms <= 15_552_000_000) return '6months';
+  return 'year';
+}
+
+/**
  * Parse a caller-supplied freshness window to milliseconds.
  * Accepts presets (pd|pw|pm|py) or durations: "90min", "2h", "3d", "1w" —
  * agents can ask for anything from "last hour" to a long backfill.
@@ -155,13 +170,18 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
 
   // LinkedIn post keyword search — harvestapi runs ~888K times/month at a
   // ~0.03% failure rate. Reactions/comments scraping stays off: each one is
-  // billed as a separate result event.
+  // billed as a separate result event. postedLimit/sortBy are first-class
+  // inputs (unlike tiktok's hang-prone add-ons): without them a freshness
+  // window filters a relevance-sorted top-N that is all old posts, so fresh
+  // ones never surface. Only applied when freshness is requested — backfills
+  // keep LinkedIn's default relevance order.
   linkedin: {
     defaultActor: 'harvestapi~linkedin-post-search',
     actorEnv: 'APIFY_LI_SEARCH_ACTOR',
-    makeInput: (q, n) => ({
+    makeInput: (q, n, freshnessMs) => ({
       searchQueries: [q],
       maxPosts: n,
+      ...(freshnessMs ? { postedLimit: linkedinPostedLimit(freshnessMs), sortBy: 'date' } : {}),
       scrapeReactions: false,
       postNestedReactions: false,
       scrapeComments: false,
