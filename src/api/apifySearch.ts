@@ -198,7 +198,7 @@ export async function apifyActorSearch(
   queryStr: string,
   count: number,
   freshnessMs?: number,
-): Promise<{ ok: true; results: SocialResult[] } | { ok: false; status: number; error: string }> {
+): Promise<{ ok: true; results: SocialResult[]; fetched: number } | { ok: false; status: number; error: string }> {
   const spec = APIFY_SEARCH[platform];
   const actor = resolvedActor(platform);
   if (!spec || !actor) return { ok: false, status: 400, error: `No Apify adapter for ${platform}` };
@@ -232,7 +232,7 @@ export async function apifyActorSearch(
         return !Number.isNaN(t) && t >= cutoff;
       });
     }
-    return { ok: true, results: results.slice(0, count) };
+    return { ok: true, results: results.slice(0, count), fetched: results.length };
   } catch (err: any) {
     const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';
     return { ok: false, status: isTimeout ? 504 : 500, error: err.message || 'Apify search failed' };

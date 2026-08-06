@@ -18,6 +18,7 @@ import memoriesRouter, { closeMemoriesDb } from './api/routes/memories.js';
 import brochureRouter, { brochurePublic } from './api/routes/brochure.js';
 import searchRouter from './api/routes/search.js';
 import { searchOpsRouter, startActorHealthScheduler } from './api/apifySearch.js';
+import { usageMiddleware, admRouter, closeUsageDb } from './api/usage.js';
 import { shutdown } from './browser/index.js';
 import { landingPage } from './api/landing.js';
 import { closeCreditsDb } from './payment/credits.js';
@@ -34,9 +35,13 @@ const app = express();
 // Global middleware
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
+app.use(usageMiddleware); // request analytics — logs API calls to usage.db
 
 // Public routes
 app.use('/health', healthRouter);
+
+// Admin dashboard — Basic auth (ADMIN_USER/ADMIN_PASS), per-app cost analytics
+app.use('/adm', rateLimit, admRouter);
 
 // Account & credit management
 app.use('/api/v1/account', rateLimit, accountRouter);
@@ -113,6 +118,7 @@ const graceful = async () => {
   closeCreditsDb();
   closeMemoriesDb();
   closeBrochureDb();
+  closeUsageDb();
   await shutdown();
   process.exit(0);
 };

@@ -14,7 +14,7 @@
  * Sister wallets/keys get 50% discount.
  */
 import type { Request, Response, NextFunction } from 'express';
-import { resolveWallet, getAccount, canAfford, chargeRequest } from './credits.js';
+import { resolveWallet, getAccount, canAfford, chargeRequest, hasUsedDailyFree } from './credits.js';
 import {
   CELO_NETWORK,
   USDC_ADDRESS,
@@ -51,6 +51,7 @@ export function creditPayment(costOverride?: number) {
     // Sister apps bypass payment entirely — check FIRST before wallet resolution
     if (isSisterCaller(req)) {
       res.setHeader('X-Sister', 'true');
+      res.locals.chargedUsd = 0;
       return next();
     }
 
@@ -65,6 +66,7 @@ export function creditPayment(costOverride?: number) {
 
     // Demo wallet bypasses payment (rate-limited by the frontend)
     if (wallet === DEMO_WALLET) {
+      res.locals.chargedUsd = 0;
       return next();
     }
 
@@ -95,6 +97,11 @@ export function creditPayment(costOverride?: number) {
 
     // Charge after the request succeeds
     const url = req.body?.url || 'unknown';
+
+    // Predicted charge for usage analytics (first request of the day is free,
+    // mirroring chargeRequest's logic). Set now so the usage middleware's
+    // finish listener sees it regardless of listener ordering.
+    res.locals.chargedUsd = hasUsedDailyFree(wallet) ? cost : 0;
 
     res.on('finish', () => {
       if (res.statusCode >= 200 && res.statusCode < 300) {

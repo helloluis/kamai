@@ -32,6 +32,7 @@ import {
   parseFreshness,
   FRESHNESS_MS,
 } from '../apifySearch.js';
+import { estimateUpstream } from '../usage.js';
 
 const router = Router();
 
@@ -268,6 +269,7 @@ router.post('/web', async (req, res) => {
           }));
         const elapsed = Date.now() - t0;
         console.log(`[Search/web] ${ts} | ${ip} | OK ${results.length} results | ${elapsed}ms (serper)`);
+        res.locals.usage = { source: 'serper', results: Math.min(results.length, requestedCount), upstream: estimateUpstream('serper'), detail: queryStr };
         res.json({ ok: true, source: 'serper', query: queryStr, results: results.slice(0, requestedCount) });
         return;
       }
@@ -318,6 +320,7 @@ router.post('/web', async (req, res) => {
       }
       const elapsed = Date.now() - t0;
       console.log(`[Search/web] ${ts} | ${ip} | OK ${results.length} results | ${elapsed}ms (llm_context)`);
+      res.locals.usage = { source: 'brave', results: Math.min(results.length, requestedCount), upstream: estimateUpstream('brave'), detail: queryStr };
       res.json({ ok: true, source: 'llm_context', query: queryStr, results: results.slice(0, requestedCount) });
       return;
     }
@@ -334,6 +337,7 @@ router.post('/web', async (req, res) => {
   const elapsed = Date.now() - t0;
   if (legacy.ok) {
     console.log(`[Search/web] ${ts} | ${ip} | OK ${legacy.results.length} results | ${elapsed}ms (web fallback)`);
+    res.locals.usage = { source: 'brave', results: Math.min(legacy.results.length, requestedCount), upstream: estimateUpstream('brave'), detail: queryStr };
     res.json({ ok: true, source: 'web', query: queryStr, results: legacy.results.slice(0, requestedCount) });
   } else {
     console.error(`[Search/web] ${ts} | ${ip} | FAIL ${legacy.error.slice(0, 80)} | ${elapsed}ms`);
@@ -383,6 +387,7 @@ router.post('/image', async (req, res) => {
           }));
         const elapsed = Date.now() - t0;
         console.log(`[Search/image] ${ts} | ${ip} | OK ${results.length} results | ${elapsed}ms (serper)`);
+        res.locals.usage = { source: 'serper', results: Math.min(results.length, requestedCount), upstream: estimateUpstream('serper'), detail: queryStr };
         res.json({ ok: true, source: 'serper', query: queryStr, results: results.slice(0, requestedCount) });
         return;
       }
@@ -431,6 +436,7 @@ router.post('/image', async (req, res) => {
       }));
     const elapsed = Date.now() - t0;
     console.log(`[Search/image] ${ts} | ${ip} | OK ${results.length} results | ${elapsed}ms (brave)`);
+    res.locals.usage = { source: 'brave', results: Math.min(results.length, requestedCount), upstream: estimateUpstream('brave'), detail: queryStr };
     res.json({ ok: true, source: 'brave', query: queryStr, results: results.slice(0, requestedCount) });
   } catch (err: any) {
     const elapsed = Date.now() - t0;
@@ -530,6 +536,13 @@ router.post('/social', async (req, res) => {
         }).filter(withinWindow);
         const elapsed = Date.now() - t0;
         console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${results.length} results | ${elapsed}ms (socialcrawl, ${data.credits_used ?? '?'}cr)`);
+        res.locals.usage = {
+          source: 'socialcrawl',
+          results: Math.min(results.length, requestedCount),
+          credits: data.credits_used ?? 1,
+          upstream: estimateUpstream('socialcrawl', { credits: data.credits_used ?? 1 }),
+          detail: platform,
+        };
         res.json({
           ok: true,
           source: 'social',
@@ -559,6 +572,13 @@ router.post('/social', async (req, res) => {
       if (apify.ok) {
         const elapsed = Date.now() - t0;
         console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${apify.results.length} results | ${elapsed}ms (apify)`);
+        res.locals.usage = {
+          source: 'apify',
+          results: apify.results.length,
+          fetched: apify.fetched,
+          upstream: estimateUpstream('apify', { platform, fetched: apify.fetched }),
+          detail: platform,
+        };
         res.json({ ok: true, source: 'social', platform, query: queryStr, results: apify.results });
         return;
       }
@@ -579,6 +599,7 @@ router.post('/social', async (req, res) => {
     const elapsed = Date.now() - t0;
     if (fallback.ok) {
       console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${fallback.results.length} results | ${elapsed}ms (brave site fallback)`);
+      res.locals.usage = { source: 'brave', results: fallback.results.length, upstream: estimateUpstream('brave'), detail: platform };
       res.json({
         ok: true,
         source: 'web',

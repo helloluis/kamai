@@ -32,13 +32,29 @@ export const MIN_DEPOSIT = 0.10;
 /** Sister app API keys get 50% discount */
 export const SISTER_DISCOUNT = 0.5;
 
-/** Sister app identifiers (API keys that get the discount) */
-export const SISTER_KEYS = new Set(
-  (process.env.SISTER_API_KEYS || '')
-    .split(',')
-    .map((k) => k.trim())
-    .filter(Boolean),
-);
+/**
+ * Sister app identifiers (API keys that bypass payment).
+ * Entries may be plain keys or `name:key` pairs — the name is used to
+ * label the app on the /adm dashboard. Matching always uses the key part.
+ */
+export const SISTER_KEYS = new Set<string>();
+/** API key → app name, for `name:key` entries in SISTER_API_KEYS. */
+export const SISTER_KEY_NAMES = new Map<string, string>();
+for (const entry of (process.env.SISTER_API_KEYS || '').split(',')) {
+  const trimmed = entry.trim();
+  if (!trimmed) continue;
+  const colon = trimmed.indexOf(':');
+  if (colon > 0) {
+    const name = trimmed.slice(0, colon).trim();
+    const key = trimmed.slice(colon + 1).trim();
+    if (key) {
+      SISTER_KEYS.add(key);
+      if (name) SISTER_KEY_NAMES.set(key, name);
+    }
+  } else {
+    SISTER_KEYS.add(trimmed);
+  }
+}
 
 // ─── Helpers ───
 
