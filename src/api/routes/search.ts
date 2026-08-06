@@ -178,9 +178,11 @@ const SOCIALCRAWL_API_KEY = process.env.SOCIALCRAWL_API_KEY || '';
 const SOCIALCRAWL_BASE = 'https://www.socialcrawl.dev';
 
 /** Platform → SocialCrawl search endpoint + param mapping. cursorParam is how each endpoint pages. */
-const SOCIAL_PLATFORMS: Record<string, { path: string; sortParam?: string; timeframeParam?: string; cursorParam?: string }> = {
+const SOCIAL_PLATFORMS: Record<string, { path: string; sortParam?: string; timeframeParam?: string; timeframeMap?: Record<string, string>; cursorParam?: string }> = {
   reddit:    { path: '/v1/reddit/search',         sortParam: 'sort',    timeframeParam: 'timeframe',   cursorParam: 'after' },
-  linkedin:  { path: '/v1/linkedin/search/posts', sortParam: 'sort_by', timeframeParam: 'date_posted', cursorParam: 'page' },
+  linkedin:  { path: '/v1/linkedin/search/posts', sortParam: 'sort_by', timeframeParam: 'date_posted', cursorParam: 'page',
+               // SocialCrawl linkedin only accepts past_24h|past_week|past_month
+               timeframeMap: { day: 'past_24h', week: 'past_week', month: 'past_month' } },
   tiktok:    { path: '/v1/tiktok/search',         cursorParam: 'cursor' },
   youtube:   { path: '/v1/youtube/search',        cursorParam: 'cursor' },
   threads:   { path: '/v1/threads/search',        cursorParam: 'cursor' },
@@ -510,7 +512,7 @@ router.post('/social', async (req, res) => {
       // freshness → native timeframe (closest bucket ≥ window). An explicit
       // `timeframe` param wins, for backward compatibility. LinkedIn has no
       // year bucket — leave native filtering off and rely on the post-filter.
-      const tf = typeof timeframe === 'string' && timeframe
+      const tfRaw = typeof timeframe === 'string' && timeframe
         ? timeframe
         : freshnessMs
           ? freshnessMs <= FRESHNESS_MS.pd ? 'day'
@@ -518,6 +520,10 @@ router.post('/social', async (req, res) => {
             : freshnessMs <= FRESHNESS_MS.pm ? 'month'
             : platform === 'reddit' ? 'year' : undefined
           : undefined;
+      // Translate to the provider's vocabulary (linkedin: past_24h|past_week|past_month).
+      // Unmapped values (e.g. linkedin 'year') drop the native param; the
+      // exact post-filter still enforces the window.
+      const tf = tfRaw && spec.timeframeMap ? spec.timeframeMap[tfRaw] : tfRaw;
       if (tf && spec.timeframeParam) params.set(spec.timeframeParam, tf);
       if (typeof cursor === 'string' && cursor && spec.cursorParam) params.set(spec.cursorParam, cursor);
 
