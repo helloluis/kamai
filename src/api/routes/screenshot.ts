@@ -24,6 +24,7 @@ import { fetchRedditPost, redditCardHtml, redditCircuitStatus } from '../../scre
 import { checkUrlResolved, normalizeUrl } from '../../browser/urlGuard.js';
 import {
   insertScreenshot, getScreenshot, readImage, saveImage, listScreenshots,
+  checkCapacity, storageStats, walletBytes,
 } from '../../screenshot/storage.js';
 import { estimateUpstream } from '../usage.js';
 
@@ -103,6 +104,16 @@ router.post('/', async (req, res) => {
       Math.floor(MAX_DEVICE_PX / (opts.width * opts.deviceScaleFactor ** 2)),
     );
     addUsageNote(res, `maxHeight reduced to ${opts.maxHeight} (pixel budget)`);
+  }
+
+  // Capacity is checked BEFORE the capture so a refusal costs no browser time.
+  // 507 rather than 429: this is a storage condition, not a rate condition.
+  const capacity = checkCapacity(callerWallet(req));
+  if (!capacity.ok) {
+    console.warn(`[Screenshot] refused (${capacity.code}): ${capacity.reason}`);
+    addUsageNote(res, `refused: ${capacity.code}`);
+    res.status(507).json({ ok: false, error: capacity.reason, code: capacity.code });
+    return;
   }
 
   const expiryDays = Math.min(Math.max(Number(body.expiresInDays) || DEFAULT_EXPIRY_DAYS, 1), 30);
@@ -235,6 +246,21 @@ router.post('/', async (req, res) => {
 // other anonymous caller's captures, since they all share the literal owner
 // "anonymous". Requiring a real identity makes the header at least as
 // trustworthy as the billing identity it mirrors.
+
+// ─── GET /usage — storage headroom, for monitoring ───
+
+screenshotPublic.get('/usage', (req, res) => {
+  const s = storageStats();
+  const key = (req.headers['x-api-key'] as string) || (req.headers['x-wallet-address'] as string);
+  res.json({
+    ok: true,
+    count: s.count,
+    totalMB: +(s.totalBytes / 1024 ** 2).toFixed(1),
+    limitMB: +(s.maxTotalBytes / 1024 ** 2).toFixed(0),
+    diskFreeGB: s.freeDiskBytes === null ? null : +(s.freeDiskBytes / 1024 ** 3).toFixed(1),
+    yourMB: key ? +(walletBytes(callerWallet(req)) / 1024 ** 2).toFixed(1) : undefined,
+  });
+});
 
 // It stays on the public router so a read is never billed, but an identity is
 // now mandatory — "anonymous" is no longer a bucket anyone can list.

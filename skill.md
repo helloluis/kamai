@@ -435,6 +435,11 @@ body, first image). It is a faithful record of the post's content, not a
 photograph of reddit.com — the `apify:reddit-card` strategy says so explicitly.
 It also takes **~110 seconds**, so set a generous client timeout.
 
+**Storage limits.** `GET /api/v1/screenshot/usage` reports how much space you
+and the server are using. Past a limit, captures are refused with **HTTP 507**
+and a `code` of `caller_quota`, `store_full` or `disk_full` — lower
+`expiresInDays` or wait for captures to expire.
+
 **Failures are loud.** If a social embed returns an error page ("Post not
 found", a rate-limit notice) the request fails with that reason rather than
 returning a blank image. There is deliberately no fallback to rendering the raw

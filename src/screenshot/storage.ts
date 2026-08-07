@@ -8,7 +8,7 @@
  * src/browser/urlGuard.ts re-checks after redirects.
  */
 import Database from 'better-sqlite3';
-import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, statfsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -129,6 +129,86 @@ export function cleanupExpiredScreenshots(): number {
     console.log(`[Screenshot] Cleaned up ${expired.length} expired screenshot(s)`);
   }
   return expired.length;
+}
+
+// ─── Capacity guards ───
+//
+// The box this runs on is 74% full and shared with 13 other apps, including
+// Postgres. Sustained capture throughput is ~45/min at ~500KB each, so an
+// unattended loop or a buggy agent could write ~32GB/day — enough to exhaust
+// the free space in about a day, at which point every co-tenant starts failing
+// writes. Retention alone does not help: nothing expires before the disk fills.
+
+const MIN_FREE_BYTES = Number(process.env.SCREENSHOT_MIN_FREE_GB ?? 5) * 1024 ** 3;
+const MAX_TOTAL_BYTES = Number(process.env.SCREENSHOT_MAX_TOTAL_GB ?? 10) * 1024 ** 3;
+const MAX_CALLER_BYTES = Number(process.env.SCREENSHOT_MAX_CALLER_MB ?? 1024) * 1024 ** 2;
+
+const sumAllStmt = db.prepare(`SELECT COALESCE(SUM(size_bytes), 0) AS n FROM screenshots`);
+const sumWalletStmt = db.prepare(`SELECT COALESCE(SUM(size_bytes), 0) AS n FROM screenshots WHERE wallet = ?`);
+
+export function totalBytes(): number {
+  return (sumAllStmt.get() as { n: number }).n;
+}
+
+export function walletBytes(wallet: string): number {
+  return (sumWalletStmt.get(wallet) as { n: number }).n;
+}
+
+/** Free bytes on the volume holding the image blobs, or null if unknowable. */
+export function freeDiskBytes(): number | null {
+  try {
+    const s = statfsSync(DATA_DIR);
+    return s.bavail * s.bsize;
+  } catch {
+    return null;
+  }
+}
+
+export interface CapacityVerdict {
+  ok: boolean;
+  reason?: string;
+  /** Machine-readable so callers can distinguish "come back later" from "you are over quota". */
+  code?: 'disk_full' | 'store_full' | 'caller_quota';
+}
+
+/**
+ * Check whether another capture may be stored. Called BEFORE the capture so a
+ * refusal costs no browser time.
+ */
+export function checkCapacity(wallet: string): CapacityVerdict {
+  const free = freeDiskBytes();
+  if (free !== null && free < MIN_FREE_BYTES) {
+    return {
+      ok: false,
+      code: 'disk_full',
+      reason: `Server low on disk (${(free / 1024 ** 3).toFixed(1)}GB free, ${(MIN_FREE_BYTES / 1024 ** 3).toFixed(0)}GB required).`,
+    };
+  }
+  const total = totalBytes();
+  if (total >= MAX_TOTAL_BYTES) {
+    return {
+      ok: false,
+      code: 'store_full',
+      reason: `Screenshot store is full (${(total / 1024 ** 3).toFixed(1)}GB of ${(MAX_TOTAL_BYTES / 1024 ** 3).toFixed(0)}GB). Older captures expire automatically.`,
+    };
+  }
+  const mine = walletBytes(wallet);
+  if (mine >= MAX_CALLER_BYTES) {
+    return {
+      ok: false,
+      code: 'caller_quota',
+      reason: `Storage quota reached (${(mine / 1024 ** 2).toFixed(0)}MB of ${(MAX_CALLER_BYTES / 1024 ** 2).toFixed(0)}MB). Wait for captures to expire or lower expiresInDays.`,
+    };
+  }
+  return { ok: true };
+}
+
+/** Snapshot for the /adm dashboard and health checks. */
+export function storageStats(): {
+  totalBytes: number; freeDiskBytes: number | null; maxTotalBytes: number; count: number;
+} {
+  const count = (db.prepare(`SELECT COUNT(*) AS n FROM screenshots`).get() as { n: number }).n;
+  return { totalBytes: totalBytes(), freeDiskBytes: freeDiskBytes(), maxTotalBytes: MAX_TOTAL_BYTES, count };
 }
 
 export function closeScreenshotDb(): void {
