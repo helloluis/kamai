@@ -161,7 +161,7 @@ export function landingPage(): string {
   </p>
 
   <h2 id="search">Search</h2>
-  <p>Web and image search across multiple premium providers with automatic failover — one API, no search keys to manage on your side.</p>
+  <p>Web, news, image, and social search across multiple premium providers with automatic failover — one API, no search keys to manage on your side.</p>
   <p><span class="method">POST</span> <code>/api/v1/search/web</code> &nbsp;·&nbsp; legacy alias <code>/search/web</code></p>
   <pre>{ "q": "Tim Cook age", "count": 5, "country": "US" }
 
@@ -171,6 +171,25 @@ export function landingPage(): string {
   <code>freshness</code> <code>pd|pw|pm|py</code> or durations like <code>90min</code>, <code>2h</code>, <code>3d</code> · <code>maxTokens</code> context budget (default 4096).
   <code>source</code> identifies which backend answered — failover is automatic.
   When available, results include extracted page <code>content</code>.</p>
+  <h3>News search</h3>
+  <p><span class="method">POST</span> <code>/api/v1/search/news</code> &nbsp;·&nbsp; legacy alias <code>/search/news</code></p>
+  <p>
+    Searches news indexes instead of the general web — use it whenever recency matters.
+    Unlike <code>/search/web</code>, the freshness window is enforced exactly and every result
+    carries an ISO 8601 <code>publishedAt</code> you can sort on.
+  </p>
+  <pre>{ "q": "openai funding round", "freshness": "6h", "count": 10 }
+
+// → { "ok": true, "source": "serper_news",
+//     "results": [{ "title", "url", "description", "source",
+//                   "publishedAt", "age"? }] }</pre>
+  <p class="note"><code>count</code> 1–20 (default 10) · <code>freshness</code> <code>pd|pw|pm|py</code> or durations like
+  <code>90min</code>, <code>2h</code>, <code>3d</code> · <code>sort</code> <code>date</code> (default) or <code>relevance</code> ·
+  <code>country</code> 2-letter code or <code>ALL</code> · <code>filterSources</code> <code>true</code> (default).
+  Ranked newest-first, and non-news sources — app stores, corporate FAQ and support pages, retailers,
+  job boards, wikis — are dropped; set <code>filterSources: false</code> to keep them.
+  Tight windows may return fewer than <code>count</code> results — that means there was no fresher coverage.</p>
+
   <p><span class="method">POST</span> <code>/api/v1/search/image</code> &nbsp;·&nbsp; legacy alias <code>/search/image</code></p>
   <pre>{ "q": "Eiffel Tower at night", "count": 10, "safesearch": "strict" }
 
@@ -184,12 +203,14 @@ export function landingPage(): string {
     Keyword search across social platforms — brand mentions, competitor tracking, community
     research. One request shape for every platform; results are normalized to one schema.
   </p>
-  <pre>{ "platform": "reddit", "q": "your brand", "sort": "new", "timeframe": "week" }
+  <pre>{ "platform": "reddit", "q": "your brand", "freshness": "3d", "count": 10 }
 
 // → { "ok": true, "source": "social", "platform": "reddit",
 //     "results": [{ "id", "url", "text", "author", "publishedAt",
 //                   "likes", "comments", "shares", "views", "meta"? }],
 //     "nextCursor": "…", "hasMore": true }</pre>
+  <p class="note">Ranked newest-first, with <code>publishedAt</code> normalized to ISO 8601 (or <code>null</code>) on every
+  backend. Pass <code>sort</code> to hand ordering back to the platform instead.</p>
   <table>
     <tr><th>Platform</th><th>Notes</th></tr>
     <tr><td><code>reddit</code></td><td>Full post search · sort: relevance|new|top|comment_count · timeframe: day|week|month|year|all</td></tr>
@@ -254,7 +275,7 @@ export function landingPage(): string {
   <table>
     <tr><th></th><th>Route</th><th>Auth</th></tr>
     <tr><td><span class="method">POST</span></td><td><code>/api/v1/browse</code></td><td>key / wallet <span class="note">(legacy /browse: none)</span></td></tr>
-    <tr><td><span class="method">POST</span></td><td><code>/api/v1/search/web</code> · <code>/api/v1/search/image</code> · <code>/api/v1/search/social</code></td><td>key / wallet <span class="note">(legacy /search/*: none)</span></td></tr>
+    <tr><td><span class="method">POST</span></td><td><code>/api/v1/search/web</code> · <code>/api/v1/search/news</code> · <code>/api/v1/search/image</code> · <code>/api/v1/search/social</code></td><td>key / wallet <span class="note">(legacy /search/*: none)</span></td></tr>
     <tr><td><span class="method">GET·POST·DEL</span></td><td><code>/browse/memories</code> · <code>/api/v1/browse/memories</code></td><td>none</td></tr>
     <tr><td><span class="method">POST</span></td><td><code>/api/v1/brochure/generate</code></td><td>key / wallet</td></tr>
     <tr><td><span class="method">PATCH</span></td><td><code>/api/v1/brochure/:id</code></td><td>key / wallet</td></tr>

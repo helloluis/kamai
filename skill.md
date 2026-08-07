@@ -352,9 +352,19 @@ Returns `Content-Type: application/pdf`.
 
 ## Web Search
 
-kamai proxies web, image, and social search so callers can run high-volume
-search without managing their own provider subscriptions or rate limits.
-Multiple backends with automatic failover — no keys to manage. Endpoints:
+kamai proxies web, news, image, and social search so callers can run
+high-volume search without managing their own provider subscriptions or rate
+limits. Multiple backends with automatic failover — no keys to manage.
+
+**Timestamps and ranking (`/search/news` and `/search/social`).** Every result
+carries a `publishedAt` that is either an ISO 8601 UTC timestamp or `null` —
+never a relative string like `"2 days ago"` — regardless of which backend
+answered, so results can be sorted and thresholded directly. Both endpoints
+rank newest-first by default. Items with no resolvable timestamp sort last,
+and are dropped entirely when a `freshness` window is set, since they can't be
+shown to fall inside it.
+
+Endpoints:
 
 ### POST /api/v1/search/web
 
@@ -374,6 +384,10 @@ LLM-optimised web search — returns extracted page snippets plus source URLs.
 - `count` (optional) — number of results, default 5, max 20
 - `country` (optional) — 2-letter country code or `ALL`
 - `maxTokens` (optional) — token budget for context API (default 4096)
+- `freshness` (optional) — presets `pd|pw|pm|py` or durations like `2h`, `3d`.
+  **Approximate here**: the window is widened to the nearest preset the web
+  index supports and is not enforced on results. For recency-critical queries
+  use `/api/v1/search/news`, which enforces the exact window.
 
 **Response:**
 ```json
@@ -396,6 +410,73 @@ LLM-optimised web search — returns extracted page snippets plus source URLs.
 `source` identifies which backend answered — failover between providers is
 automatic. When `content` is present it contains extracted page text;
 otherwise results carry only the `description` snippet.
+
+### POST /api/v1/search/news
+
+News search against news indexes rather than the general web — use this for
+"what happened", breaking coverage, and anything where recency matters.
+Prefer it over `/search/web` whenever the query is time-sensitive: the web
+index ranks evergreen pages above reporting and treats freshness as a hint,
+while this endpoint enforces the requested window exactly.
+
+**Request:**
+```json
+{
+  "q": "openai funding round",
+  "count": 10,
+  "freshness": "6h",
+  "sort": "date",
+  "country": "US"
+}
+```
+
+**Parameters:**
+- `q` (required) — search query
+- `count` (optional) — max results, default 10, max 20
+- `freshness` (optional) — presets `pd|pw|pm|py` or exact durations like
+  `90min`, `2h`, `3d`, `1w`. The window is enforced server-side, so tight
+  windows may return fewer than `count` results — that means there was no
+  fresher coverage, not that the search failed.
+- `sort` (optional) — `date` (default, newest first) or `relevance` to fall
+  back to the provider's own ranking
+- `filterSources` (optional) — default `true`. Drops results that aren't news
+  reporting: app-store listings, corporate FAQ/support/docs pages, retailer
+  and job-board pages, wikis, social platforms. Set `false` to see everything
+  the provider returned.
+- `country` (optional) — 2-letter country code or `ALL`
+
+**Response:**
+```json
+{
+  "ok": true,
+  "source": "serper_news",
+  "query": "openai funding round",
+  "results": [
+    {
+      "title": "OpenAI closes funding round",
+      "url": "https://example.com/article",
+      "description": "The company confirmed...",
+      "source": "Reuters",
+      "publishedAt": "2026-08-07T09:12:00.000Z",
+      "age": "2 hours ago"
+    }
+  ]
+}
+```
+
+Results are ranked newest-first by default. Relevance ranking surfaces
+evergreen explainers and hub pages that match the keywords but aren't recent
+reporting, which is rarely what a news query wants — pass `sort: "relevance"`
+if you do want the provider's ordering.
+
+`source` identifies which backend answered: `serper_news`, `brave_news`, or
+`web_news` (a thinner last-resort bucket used only when both news indexes are
+unavailable).
+
+An empty `results` array with `"ok": true` means the filters removed
+everything, not that the search failed — usually the window was too tight.
+Widen `freshness`, or set `filterSources: false` to check whether the source
+filter was responsible.
 
 ### POST /api/v1/search/image
 
@@ -456,7 +537,9 @@ research. One request shape for every platform.
   live, expect 15–60s), `facebook` (public post search — runs live, so
   expect 20–60s response times; public content only), or `facebook-events`
 - `q` (required) — search query
-- `sort` (optional) — reddit: `relevance|new|top|comment_count`; linkedin: `relevance|date`
+- `sort` (optional) — reddit: `relevance|new|top|comment_count`; linkedin:
+  `relevance|date`. Omit it to get kamai's newest-first ranking; passing it
+  hands ordering back to the platform (so `top` really is top-by-engagement).
 - `timeframe` (optional) — reddit: `day|week|month|year|all`; linkedin: `day|week|month`
 - `freshness` (optional) — limit results by age: presets `pd|pw|pm|py` or
   exact durations like `90min`, `2h`, `3d`, `1w`. The exact window is always
@@ -500,6 +583,7 @@ only `url` + `text` snippet.
 | Endpoint | Cost |
 |----------|------|
 | `/search/web` | $0.003 |
+| `/search/news` | $0.003 |
 | `/search/image` | $0.003 |
 | `/search/social` | $0.003 |
 

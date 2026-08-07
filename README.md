@@ -17,6 +17,7 @@ Public URL: `https://kamai.minai.work` — LLM-facing integration spec: [`skill.
 |-------|------|-------------|
 | `POST /api/v1/browse` | credits | Browse a URL with optional actions; returns text, links, forms, memories |
 | `POST /api/v1/search/web` | credits | Web search — multi-provider with automatic failover |
+| `POST /api/v1/search/news` | credits | News search — news indexes, exact freshness windows, recency-ranked, non-news sources filtered |
 | `POST /api/v1/search/image` | credits | Image search — multi-provider with automatic failover |
 | `POST /api/v1/search/social` | credits | Social search: reddit, linkedin, tiktok, instagram, youtube, threads, pinterest, facebook posts + events — freshness windows supported |
 | `POST /api/v1/brochure/generate` | credits | Generate a PDF brochure from structured content |
@@ -44,7 +45,7 @@ Identify with `x-api-key` or `x-wallet-address` header. Sister apps (keys in `SI
 |---------|------|
 | Browse (no actions) | $0.009 |
 | Browse with actions | $0.013 |
-| Search (web/image) | $0.003 |
+| Search (web/news/image) | $0.003 |
 | Brochure PDF | $0.050 |
 
 ## How it works
@@ -53,6 +54,7 @@ Identify with `x-api-key` or `x-wallet-address` header. Sister apps (keys in `SI
 - **Auto-sessions**: each caller identity (API key → wallet → IP) gets a persistent browser context; cookies/auth/localStorage survive across requests, expiring after 30 min idle.
 - **Strategies**: known domains bypass Playwright — YouTube → yt-dlp, GitHub → API (`src/browser/strategies/`). A domain memory with a `strategy` field overrides routing.
 - **Domain memories**: learnings saved via `POST /browse/memories` are attached to every browse response for that domain, so agents improve over time.
+- **Search normalization** (`src/api/searchNormalize.ts`): news and social results are uniform regardless of which provider answered — `publishedAt` is always ISO 8601 or null (providers emit unix epochs, `"2 hours ago"`, `"Aug 5, 2026"`), ranking is newest-first, and `/news` drops non-news sources via a blocklist extendable with `NEWS_BLOCKED_HOSTS`.
 
 ## Deployment
 
@@ -77,6 +79,9 @@ src/
   api/
     middleware/         — rate-limit
     routes/             — browse, search, memories, brochure, session, account, deposit, health
+    searchNormalize.ts  — ISO timestamp normalization, recency sort, news-source blocklist
+    apifySearch.ts      — Apify actor registry + 72h actor health checks
+    usage.ts            — request analytics + /adm dashboard
   browser/
     engine.ts           — shared Chromium instance + stealth context
     browse.ts           — navigate → actions → extract

@@ -15,6 +15,7 @@
  */
 import { Router } from 'express';
 import { SISTER_KEYS } from '../payment/config.js';
+import { normalizePublishedAt } from './searchNormalize.js';
 
 const APIFY_BASE = 'https://api.apify.com/v2';
 export const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN || '';
@@ -41,8 +42,11 @@ interface ApifySearchSpec {
   defaultActor: string;
   actorEnv: string;
   makeInput: (q: string, n: number, freshnessMs?: number) => Record<string, unknown>;
-  /** Map one raw dataset item to SocialResult; return null to drop the item. */
-  normalize: (it: any) => SocialResult | null;
+  /**
+   * Map one raw dataset item to SocialResult; return null to drop the item.
+   * `nowMs` anchors relative timestamps so every item in a run shares a clock.
+   */
+  normalize: (it: any, nowMs: number) => SocialResult | null;
 }
 
 /** Preset freshness windows, same vocabulary as /search/web. */
@@ -97,7 +101,7 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
     defaultActor: 'memo23~facebook-search-scraper',
     actorEnv: 'APIFY_FB_SEARCH_ACTOR',
     makeInput: (q, n) => ({ searchType: 'posts', searchQueries: [q], maxItems: n }),
-    normalize: (it: any) => {
+    normalize: (it: any, nowMs: number) => {
       const url = it?.postUrl || it?.post_url || it?.url || null;
       if (!url) return null;
       return {
@@ -105,9 +109,7 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
         url,
         text: it.text || null,
         author: it.authorName || it.author_username || it.name || null,
-        publishedAt:
-          it.creationTime ||
-          (typeof it.create_time === 'number' ? new Date(it.create_time).toISOString() : null),
+        publishedAt: normalizePublishedAt(it.creationTime ?? it.create_time, nowMs),
         likes: it.likeCount ?? it.like_count ?? null,
         comments: it.commentCount ?? it.comment_count ?? null,
         shares: it.shareCount ?? it.share_count ?? null,
@@ -124,7 +126,7 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
     defaultActor: 'apify~instagram-search-scraper',
     actorEnv: 'APIFY_IG_SEARCH_ACTOR',
     makeInput: (q, n) => ({ search: q, searchType: 'popular', searchLimit: n }),
-    normalize: (it: any) => {
+    normalize: (it: any, nowMs: number) => {
       const url = it?.url || null;
       if (!url) return null;
       return {
@@ -132,7 +134,7 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
         url,
         text: it.caption || null,
         author: it.ownerUsername || null,
-        publishedAt: it.timestamp || null,
+        publishedAt: normalizePublishedAt(it.timestamp, nowMs),
         likes: typeof it.likesCount === 'number' && it.likesCount >= 0 ? it.likesCount : null,
         comments: it.commentsCount ?? null,
         shares: null, // Instagram never exposes share counts
@@ -151,7 +153,7 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
     defaultActor: 'clockworks~tiktok-scraper',
     actorEnv: 'APIFY_TT_SEARCH_ACTOR',
     makeInput: (q, n) => ({ searchQueries: [q], searchSection: '/video', resultsPerPage: n }),
-    normalize: (it: any) => {
+    normalize: (it: any, nowMs: number) => {
       const url = it?.webVideoUrl || null;
       if (!url || it.errorCode) return null;
       return {
@@ -159,7 +161,7 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
         url,
         text: it.text || null,
         author: it.authorMeta?.name || null,
-        publishedAt: it.createTimeISO || null,
+        publishedAt: normalizePublishedAt(it.createTimeISO ?? it.createTime, nowMs),
         likes: it.diggCount ?? null,
         comments: it.commentCount ?? null,
         shares: it.shareCount ?? null,
@@ -187,7 +189,7 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
       scrapeComments: false,
       postNestedComments: false,
     }),
-    normalize: (it: any) => {
+    normalize: (it: any, nowMs: number) => {
       const url = it?.linkedinUrl || null;
       if (!url) return null;
       return {
@@ -195,7 +197,7 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
         url,
         text: it.content || null,
         author: it.author?.name || null,
-        publishedAt: it.postedAt?.date || null,
+        publishedAt: normalizePublishedAt(it.postedAt?.date ?? it.postedAt?.timestamp, nowMs),
         likes: it.engagement?.likes ?? null,
         comments: it.engagement?.comments ?? null,
         shares: it.engagement?.shares ?? null,
@@ -239,14 +241,18 @@ export async function apifyActorSearch(
       return { ok: false, status: resp.status >= 500 ? 502 : resp.status, error: `Apify actor ${actor} returned ${resp.status}: ${txt.slice(0, 200)}` };
     }
     const items: any[] = (await resp.json()) as any[];
+    // NB: an arrow, not a bare `.map(spec.normalize)` — map would pass the
+    // array index as normalize's second argument, silently anchoring every
+    // relative timestamp to epoch+0ms.
+    const now = Date.now();
     let results = (Array.isArray(items) ? items : [])
-      .map(spec.normalize)
+      .map((it) => spec.normalize(it, now))
       .filter((r): r is SocialResult => r !== null);
     // Post-filter by publishedAt. Items with no usable timestamp can't prove
     // freshness and are dropped — applies even after native provider filtering
     // as a safety net against stale indexes.
     if (freshnessMs) {
-      const cutoff = Date.now() - freshnessMs;
+      const cutoff = now - freshnessMs;
       results = results.filter((r) => {
         const t = r.publishedAt ? Date.parse(r.publishedAt) : NaN;
         return !Number.isNaN(t) && t >= cutoff;

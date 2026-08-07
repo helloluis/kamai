@@ -33,6 +33,7 @@ import {
   FRESHNESS_MS,
 } from '../apifySearch.js';
 import { estimateUpstream } from '../usage.js';
+import { normalizePublishedAt, sortByRecency, isNewsSource } from '../searchNormalize.js';
 
 const router = Router();
 
@@ -45,6 +46,10 @@ const BRAVE_BASE = 'https://api.search.brave.com/res/v1';
 
 interface SerperWebResponse {
   organic?: Array<{ title?: string; link?: string; snippet?: string; date?: string }>;
+}
+
+interface SerperNewsResponse {
+  news?: Array<{ title?: string; link?: string; snippet?: string; date?: string; source?: string; imageUrl?: string }>;
 }
 
 interface SerperImageResponse {
@@ -82,6 +87,18 @@ interface BraveWebSearchResponse {
   news?: {
     results: Array<{ title: string; url: string; description: string; age?: string }>;
   };
+}
+
+interface BraveNewsSearchResponse {
+  results?: Array<{
+    title?: string;
+    url?: string;
+    description?: string;
+    age?: string;
+    /** ISO 8601 when Brave has an exact timestamp — preferred over the fuzzy `age`. */
+    page_age?: string;
+    meta_url?: { hostname?: string };
+  }>;
 }
 
 interface BraveImageSearchResponse {
@@ -125,6 +142,19 @@ async function serperFetch(path: string, body: Record<string, unknown>): Promise
   });
 }
 
+/** Uniform news item — same shape whichever provider answered. */
+interface NewsResult {
+  title: string;
+  url: string;
+  description: string;
+  /** Publisher name or hostname. */
+  source: string;
+  /** ISO 8601, or null when the provider gave no usable timestamp. */
+  publishedAt: string | null;
+  /** The provider's raw age string, kept for debugging. */
+  age?: string;
+}
+
 /** Brave standard web search, factored out so /web and /social share it as a fallback. */
 async function braveWebSearch(
   queryStr: string,
@@ -132,7 +162,12 @@ async function braveWebSearch(
   freshness?: unknown,
   country?: unknown,
 ): Promise<
-  | { ok: true; results: Array<{ title: string; url: string; description: string; age?: string }> }
+  | {
+      ok: true;
+      results: Array<{ title: string; url: string; description: string; age?: string }>;
+      /** The news bucket on its own, unprefixed — /news uses this as its last-resort tier. */
+      news: Array<{ title: string; url: string; description: string; age?: string }>;
+    }
   | { ok: false; status: number; error: string }
 > {
   try {
@@ -154,13 +189,16 @@ async function braveWebSearch(
     }
     const data = (await webResp.json()) as BraveWebSearchResponse;
     const results: Array<{ title: string; url: string; description: string; age?: string }> = [];
+    const news: Array<{ title: string; url: string; description: string; age?: string }> = [];
     for (const r of data.web?.results || []) {
       if (r?.url) results.push({ title: r.title || '', url: r.url, description: r.description || '', age: r.age });
     }
     for (const r of data.news?.results || []) {
-      if (r?.url) results.push({ title: `[News] ${r.title || ''}`, url: r.url, description: r.description || '', age: r.age });
+      if (!r?.url) continue;
+      news.push({ title: r.title || '', url: r.url, description: r.description || '', age: r.age });
+      results.push({ title: `[News] ${r.title || ''}`, url: r.url, description: r.description || '', age: r.age });
     }
-    return { ok: true, results };
+    return { ok: true, results, news };
   } catch (err: any) {
     return { ok: false, status: 500, error: err.message || 'Search failed' };
   }
@@ -356,6 +394,223 @@ router.post('/web', async (req, res) => {
   }
 });
 
+// ─── /news — Serper News → Brave News → Brave web news bucket ───
+//
+// Split out from /web because a general web index is the wrong corpus for
+// "what happened recently": it ranks evergreen pages above reporting, and its
+// freshness filter is advisory. This route queries news indexes directly and
+// enforces the requested window exactly, the way /social does.
+
+router.post('/news', async (req, res) => {
+  if (!SERPER_API_KEY && !BRAVE_API_KEY) {
+    res.status(503).json({ ok: false, error: 'Search not configured on kamai server (SERPER_API_KEY and BRAVE_API_KEY missing)' });
+    return;
+  }
+
+  const { q, query, count, freshness, country, sort, filterSources } = req.body as Record<string, unknown>;
+  const queryStr = String(q || query || '').trim();
+  if (!queryStr) {
+    res.status(400).json({ ok: false, error: 'Missing "q" field' });
+    return;
+  }
+
+  const freshnessMs = parseFreshness(freshness) ?? undefined;
+  if (freshness !== undefined && freshnessMs === undefined) {
+    res.status(400).json({ ok: false, error: 'Invalid "freshness" — use pd|pw|pm|py or a duration like "90min", "2h", "3d", "1w"' });
+    return;
+  }
+  // Recency is the default ranking. Provider relevance ordering floats
+  // evergreen explainers and hub pages above the reporting a news query is
+  // actually after; `sort: "relevance"` opts back into provider order.
+  const sortBy = sort === 'relevance' ? 'relevance' : 'date';
+  // Source filtering is on by default — see isNewsSource for what it drops.
+  const useSourceFilter = filterSources !== false;
+
+  const requestedCount = Math.min(Math.max(Number(count) || 10, 1), 20);
+  // Both the freshness window and the source filter drop items after the
+  // provider has ranked them, so always ask upstream for more than we need.
+  // Neither Serper nor Brave prices per result, so the over-fetch is free.
+  const fetchCount = Math.min(requestedCount * 3, 50);
+
+  const ts = new Date().toISOString();
+  const ip = callerIp(req);
+  const t0 = Date.now();
+  const now = Date.now();
+  console.log(`[Search/news] ${ts} | ${ip} | REQ "${queryStr}"${freshnessMs ? ` fresh<${Math.round(freshnessMs / 60000)}min` : ''}`);
+
+  // Snap the window to each provider's native filter vocabulary. These are
+  // coarser than the request (Google has no "90 minutes"), so they only narrow
+  // the candidate set — `withinWindow` below is what actually enforces it.
+  const serperTbs = !freshnessMs ? undefined
+    : freshnessMs <= 3_600_000 ? 'qdr:h'
+    : freshnessMs <= FRESHNESS_MS.pd ? 'qdr:d'
+    : freshnessMs <= FRESHNESS_MS.pw ? 'qdr:w'
+    : freshnessMs <= FRESHNESS_MS.pm ? 'qdr:m' : 'qdr:y';
+  const braveFreshness = !freshnessMs ? undefined
+    : freshnessMs <= FRESHNESS_MS.pd ? 'pd'
+    : freshnessMs <= FRESHNESS_MS.pw ? 'pw'
+    : freshnessMs <= FRESHNESS_MS.pm ? 'pm' : 'py';
+
+  /**
+   * Exact-window enforcement. An item whose timestamp we can't resolve cannot
+   * prove it belongs in the window, so it's dropped rather than passed through
+   * — a stale item in a "last 2 hours" feed is worse than a missing one.
+   */
+  const withinWindow = (r: NewsResult): boolean => {
+    if (!freshnessMs) return true;
+    if (!r.publishedAt) return false;
+    const t = Date.parse(r.publishedAt);
+    return !Number.isNaN(t) && t >= now - freshnessMs;
+  };
+
+  let droppedSource = 0;
+  let droppedWindow = 0;
+
+  /**
+   * Filter, then rank. Source filtering runs first so the "stale" count
+   * reflects real outlets rather than app-store pages that were never news.
+   */
+  const finalize = (items: NewsResult[]): NewsResult[] => {
+    let kept = items;
+    if (useSourceFilter) {
+      const before = kept.length;
+      kept = kept.filter((r) => isNewsSource(r.url));
+      droppedSource = before - kept.length;
+    }
+    const beforeWindow = kept.length;
+    kept = kept.filter(withinWindow);
+    droppedWindow = beforeWindow - kept.length;
+    if (sortBy === 'date') sortByRecency(kept);
+    return kept.slice(0, requestedCount);
+  };
+
+  /**
+   * Finalize, log, and respond. `tier` doubles as the response `source` so
+   * callers can tell which index answered.
+   */
+  const sendNews = (tier: string, usageSource: 'serper' | 'brave', items: NewsResult[]): void => {
+    const results = finalize(items);
+    const elapsed = Date.now() - t0;
+    const drops = [
+      droppedSource ? `${droppedSource} non-news` : '',
+      droppedWindow ? `${droppedWindow} stale` : '',
+    ].filter(Boolean).join(', ');
+    console.log(
+      `[Search/news] ${ts} | ${ip} | OK ${results.length}/${items.length} results | ${elapsed}ms (${tier})` +
+        (drops ? ` | dropped ${drops}` : ''),
+    );
+    // Record filtering on the /adm dashboard. An empty result set from a
+    // healthy provider is a filter outcome, not an outage — without this note
+    // the two are indistinguishable after the fact.
+    if (drops) addUsageNote(res, `dropped ${drops}`);
+    res.locals.usage = {
+      source: usageSource,
+      results: results.length,
+      upstream: estimateUpstream(usageSource),
+      detail: queryStr,
+    };
+    res.json({ ok: true, source: tier, query: queryStr, results });
+  };
+
+  // ── 1. Serper News (primary — Google News index) ──
+  if (SERPER_API_KEY) {
+    try {
+      const body: Record<string, unknown> = { q: queryStr, num: fetchCount };
+      if (typeof country === 'string' && country && country.toUpperCase() !== 'ALL') {
+        body.gl = country.toLowerCase();
+      }
+      if (serperTbs) body.tbs = serperTbs;
+
+      const serperResp = await serperFetch('/news', body);
+      if (serperResp.ok) {
+        const data = (await serperResp.json()) as SerperNewsResponse;
+        const items: NewsResult[] = (Array.isArray(data?.news) ? data.news : [])
+          .filter((r) => r?.link)
+          .map((r) => ({
+            title: r.title || '',
+            url: r.link as string,
+            description: r.snippet || '',
+            source: r.source || new URL(r.link as string).hostname,
+            publishedAt: normalizePublishedAt(r.date, now),
+            age: typeof r.date === 'string' ? r.date : undefined,
+          }));
+        sendNews('serper_news', 'serper', items);
+        return;
+      }
+      const errBody = await serperResp.text();
+      console.warn(`[Search/news] ${ts} | ${ip} | serper error ${serperResp.status}: ${errBody.slice(0, 200)} — falling back to Brave`);
+      addUsageNote(res, `serper ${serperResp.status}`);
+    } catch (err: any) {
+      console.warn(`[Search/news] ${ts} | ${ip} | serper exception: ${err.message} — falling back to Brave`);
+      addUsageNote(res, `serper: ${err.message}`);
+    }
+  }
+
+  if (!BRAVE_API_KEY) {
+    res.status(502).json({ ok: false, error: 'Serper news search failed and no Brave fallback is configured' });
+    return;
+  }
+
+  // ── 2. Brave News Search ──
+  try {
+    const params = new URLSearchParams({
+      q: queryStr,
+      count: String(fetchCount),
+      text_decorations: 'false',
+      search_lang: 'en',
+    });
+    if (braveFreshness) params.set('freshness', braveFreshness);
+    if (typeof country === 'string' && country && country.toUpperCase() !== 'ALL') {
+      params.set('country', country);
+    }
+
+    const newsResp = await braveFetch(`${BRAVE_BASE}/news/search?${params.toString()}`);
+    if (newsResp.ok) {
+      const data = (await newsResp.json()) as BraveNewsSearchResponse;
+      const items: NewsResult[] = (data.results || [])
+        .filter((r) => r?.url)
+        .map((r) => ({
+          title: r.title || '',
+          url: r.url as string,
+          description: r.description || '',
+          source: r.meta_url?.hostname || new URL(r.url as string).hostname,
+          // page_age is an exact ISO timestamp when present; age is fuzzy.
+          publishedAt: normalizePublishedAt(r.page_age, now) ?? normalizePublishedAt(r.age, now),
+          age: r.age,
+        }));
+      sendNews('brave_news', 'brave', items);
+      return;
+    }
+    const errBody = await newsResp.text();
+    console.warn(`[Search/news] brave news error ${newsResp.status}: ${errBody.slice(0, 200)} — falling back to web news bucket`);
+    addUsageNote(res, `brave_news ${newsResp.status}`);
+  } catch (err: any) {
+    console.warn(`[Search/news] brave news exception: ${err.message} — falling back`);
+    addUsageNote(res, `brave_news: ${err.message}`);
+  }
+
+  // ── 3. Brave web search, news bucket only ──
+  // Last resort: the standard web endpoint returns a small news cluster
+  // alongside its web results. Thinner coverage, but it keeps the endpoint
+  // answering when both news indexes are down.
+  const legacy = await braveWebSearch(queryStr, fetchCount, braveFreshness, country);
+  const elapsed = Date.now() - t0;
+  if (legacy.ok) {
+    const items: NewsResult[] = legacy.news.map((r) => ({
+      title: r.title,
+      url: r.url,
+      description: r.description,
+      source: new URL(r.url).hostname,
+      publishedAt: normalizePublishedAt(r.age, now),
+      age: r.age,
+    }));
+    sendNews('web_news', 'brave', items);
+    return;
+  }
+  console.error(`[Search/news] ${ts} | ${ip} | FAIL ${legacy.error.slice(0, 80)} | ${elapsed}ms`);
+  res.status(legacy.status).json({ ok: false, error: legacy.error });
+});
+
 // ─── /image — Serper (primary) → Brave Image Search (fallback) ───
 
 router.post('/image', async (req, res) => {
@@ -495,14 +750,28 @@ router.post('/social', async (req, res) => {
   const t0 = Date.now();
   console.log(`[Search/social] ${ts} | ${ip} | REQ ${platform} "${queryStr}"${freshnessMs ? ` fresh<${Math.round(freshnessMs / 60000)}min` : ''}`);
 
+  const now = Date.now();
+
   // Exact-window post-filter. Native provider filters are coarser than the
   // requested window (or absent), so every tier gets this pass. Items with
   // no usable timestamp can't prove freshness and are dropped.
   const withinWindow = (r: { publishedAt: string | null }): boolean => {
     if (!freshnessMs) return true;
     const t = r.publishedAt ? Date.parse(r.publishedAt) : NaN;
-    return !Number.isNaN(t) && t >= Date.now() - freshnessMs;
+    return !Number.isNaN(t) && t >= now - freshnessMs;
   };
+
+  /**
+   * Rank newest-first by default, matching /search/news — relevance ordering
+   * surfaces the same high-engagement evergreen posts on every query.
+   *
+   * An explicit `sort` is a deliberate request for the platform's own ordering
+   * (reddit `top`, linkedin `relevance`), so it suppresses the re-rank rather
+   * than being silently overridden.
+   */
+  const explicitSort = typeof sort === 'string' && sort.trim().length > 0;
+  const rank = <T extends { publishedAt: string | null }>(items: T[]): T[] =>
+    explicitSort ? items : sortByRecency(items);
 
   // ── 1. SocialCrawl ──
   if (spec && SOCIALCRAWL_API_KEY) {
@@ -532,7 +801,7 @@ router.post('/social', async (req, res) => {
 
       if (scResp.ok && data?.success) {
         const items = Array.isArray(data?.data?.items) ? data.data.items : [];
-        const results = items.map((it: any) => {
+        const mapped = items.map((it: any) => {
           const p = it?.post || it || {};
           const id = p.id || null;
           let url = p.url || null;
@@ -546,14 +815,15 @@ router.post('/social', async (req, res) => {
             url,
             text: p.content?.text || p.title || p.text || null,
             author: p.author?.username || p.author?.name || null,
-            publishedAt: p.published_at || p.created_at || null,
+            publishedAt: normalizePublishedAt(p.published_at || p.created_at, now),
             likes: p.engagement?.likes ?? p.activity?.num_likes ?? null,
             comments: p.engagement?.comments ?? p.activity?.num_comments ?? null,
             shares: p.engagement?.shares ?? p.activity?.num_shares ?? null,
             views: p.engagement?.views ?? p.activity?.num_views ?? null,
             meta: p.ext || undefined,
           };
-        }).filter(withinWindow);
+        });
+        const results = rank(mapped.filter(withinWindow));
         const elapsed = Date.now() - t0;
         console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${results.length} results | ${elapsed}ms (socialcrawl, ${data.credits_used ?? '?'}cr)`);
         res.locals.usage = {
@@ -593,16 +863,17 @@ router.post('/social', async (req, res) => {
       const apify = await apifyActorSearch(platform, queryStr, requestedCount, freshnessMs);
       recordActorOutcome(platform, apify.ok, Date.now() - tA, apify.ok ? undefined : apify.error);
       if (apify.ok) {
+        const results = rank(apify.results);
         const elapsed = Date.now() - t0;
-        console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${apify.results.length} results | ${elapsed}ms (apify)`);
+        console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${results.length} results | ${elapsed}ms (apify)`);
         res.locals.usage = {
           source: 'apify',
-          results: apify.results.length,
+          results: results.length,
           fetched: apify.fetched,
           upstream: estimateUpstream('apify', { platform, fetched: apify.fetched }),
           detail: platform,
         };
-        res.json({ ok: true, source: 'social', platform, query: queryStr, results: apify.results });
+        res.json({ ok: true, source: 'social', platform, query: queryStr, results });
         return;
       }
       console.warn(`[Search/social] ${ts} | ${ip} | apify ${platform} error: ${apify.error.slice(0, 200)} — falling back`);
@@ -622,22 +893,24 @@ router.post('/social', async (req, res) => {
     const fallback = await braveWebSearch(siteQuery, requestedCount, braveFreshness);
     const elapsed = Date.now() - t0;
     if (fallback.ok) {
-      console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${fallback.results.length} results | ${elapsed}ms (brave site fallback)`);
-      res.locals.usage = { source: 'brave', results: fallback.results.length, upstream: estimateUpstream('brave'), detail: platform };
-      res.json({
-        ok: true,
-        source: 'web',
-        platform,
-        query: queryStr,
-        results: fallback.results.map((r) => ({
-          id: null,
-          url: r.url,
-          text: r.description,
-          author: null,
-          publishedAt: r.age || null,
-          likes: null, comments: null, shares: null, views: null,
-        })),
-      });
+      // Brave's `age` is a fuzzy string ("2 days ago") — normalize it so this
+      // tier's publishedAt is a real ISO timestamp like every other tier's,
+      // then re-apply the window it couldn't enforce natively.
+      const results = rank(
+        fallback.results
+          .map((r) => ({
+            id: null,
+            url: r.url,
+            text: r.description,
+            author: null,
+            publishedAt: normalizePublishedAt(r.age, now),
+            likes: null, comments: null, shares: null, views: null,
+          }))
+          .filter(withinWindow),
+      );
+      console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${results.length} results | ${elapsed}ms (brave site fallback)`);
+      res.locals.usage = { source: 'brave', results: results.length, upstream: estimateUpstream('brave'), detail: platform };
+      res.json({ ok: true, source: 'web', platform, query: queryStr, results });
       return;
     }
     console.error(`[Search/social] ${ts} | ${ip} | FAIL ${platform} | ${fallback.error.slice(0, 80)} | ${elapsed}ms`);
