@@ -16,6 +16,7 @@
 import { Router } from 'express';
 import { SISTER_KEYS } from '../payment/config.js';
 import { normalizePublishedAt } from './searchNormalize.js';
+import { startApifyCostScheduler, apifyCostSnapshot } from './apifyCost.js';
 
 const APIFY_BASE = 'https://api.apify.com/v2';
 export const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN || '';
@@ -258,7 +259,11 @@ export async function apifyActorSearch(
         return !Number.isNaN(t) && t >= cutoff;
       });
     }
-    return { ok: true, results: results.slice(0, count), fetched: results.length };
+    // `fetched` feeds the cost estimate, so it must be what Apify BILLS — the
+    // number of dataset items the actor produced — not what survived our
+    // freshness post-filter. We over-fetch ~3x on purpose, so counting the
+    // filtered survivors understated spend on every windowed query.
+    return { ok: true, results: results.slice(0, count), fetched: items.length };
   } catch (err: any) {
     const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';
     return { ok: false, status: isTimeout ? 504 : 500, error: err.message || 'Apify search failed' };
@@ -341,11 +346,28 @@ export async function runActorHealthChecks(): Promise<ActorHealth[]> {
 }
 
 /** Boot check (after a 60s settle delay) + recurring 72h checks. No-op without a token. */
+/** platform → the actor slug it currently calls, for cost attribution. */
+export function platformActorMap(): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const platform of Object.keys(APIFY_SEARCH)) {
+    const actor = resolvedActor(platform);
+    if (actor) map[platform] = actor;
+  }
+  // Reddit is not a search platform but its screenshot actor bills the same way.
+  map.reddit = process.env.APIFY_REDDIT_ACTOR || 'trudax~reddit-scraper-lite';
+  return map;
+}
+
 export function startActorHealthScheduler(): void {
   if (!APIFY_API_TOKEN) {
     console.log('[ActorHealth] APIFY_API_TOKEN not set — actor health checks disabled');
     return;
   }
+  // Health checks are real billed Apify runs — 94 TikTok runs against 72 kamai
+  // calls, the gap being smoke tests — and they were previously invisible to
+  // the /adm P&L. Start the cost refresher alongside them so the measured
+  // averages include their cost.
+  startApifyCostScheduler(platformActorMap());
   const boot = setTimeout(() => {
     runActorHealthChecks().catch((err) => console.error(`[ActorHealth] check run failed: ${err.message}`));
   }, 60_000);
@@ -378,6 +400,14 @@ searchOpsRouter.get('/', (_req, res) => {
       actor: resolvedActor(p),
     })),
   });
+});
+
+/**
+ * GET /api/v1/search/health/cost — real Apify spend vs what kamai logged.
+ * The two drifting apart is the signal that the estimate is wrong again.
+ */
+searchOpsRouter.get('/cost', (_req, res) => {
+  res.json({ ok: true, apify: apifyCostSnapshot() });
 });
 
 searchOpsRouter.post('/check', async (_req, res) => {

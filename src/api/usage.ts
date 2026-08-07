@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { SISTER_KEYS, SISTER_KEY_NAMES } from '../payment/config.js';
 import { getAccountByApiKey } from '../payment/credits.js';
+import { measuredCostPerRun } from './apifyCost.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const db = new Database(join(__dirname, '..', '..', 'usage.db'));
@@ -55,7 +56,11 @@ const stmtInsert = db.prepare(
 
 // ─── Upstream cost estimates ───
 
-/** Estimated upstream prices (USD) from provider list prices, Aug 2026. */
+/**
+ * COLD-START FALLBACK ONLY — superseded by measuredCostPerRun() as soon as
+ * src/api/apifyCost.ts has pulled real invoices. These list-price figures
+ * understated actual spend by 1.8x (LinkedIn) to 15x (TikTok).
+ */
 const APIFY_COST: Record<string, { start: number; perResult: number }> = {
   facebook: { start: 0.005, perResult: 0.0019 },
   instagram: { start: 0.001, perResult: 0.0027 },
@@ -82,6 +87,11 @@ export function estimateUpstream(
     case 'socialcrawl':
       return 0.008 * (opts.credits ?? 1); // ~$0.008 per SocialCrawl credit
     case 'apify': {
+      // Prefer the cost Apify actually billed for this actor. The static table
+      // below understated real spend by up to 15x (TikTok) because it was
+      // derived from list prices rather than invoices.
+      const real = measuredCostPerRun(opts.platform ?? '');
+      if (real !== null) return real;
       const c = APIFY_COST[opts.platform ?? ''] ?? { start: 0.005, perResult: 0.002 };
       return c.start + c.perResult * (opts.fetched ?? 1);
     }
