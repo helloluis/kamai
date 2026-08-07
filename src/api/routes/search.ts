@@ -896,6 +896,9 @@ router.post('/social', async (req, res) => {
       // Brave's `age` is a fuzzy string ("2 days ago") — normalize it so this
       // tier's publishedAt is a real ISO timestamp like every other tier's,
       // then re-apply the window it couldn't enforce natively.
+      // Brave merges its news bucket into the result set, so it returns more
+      // rows than the count we asked for — slice like the other two tiers do,
+      // otherwise `count` silently means nothing whenever this tier answers.
       const results = rank(
         fallback.results
           .map((r) => ({
@@ -907,7 +910,7 @@ router.post('/social', async (req, res) => {
             likes: null, comments: null, shares: null, views: null,
           }))
           .filter(withinWindow),
-      );
+      ).slice(0, requestedCount);
       console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${results.length} results | ${elapsed}ms (brave site fallback)`);
       res.locals.usage = { source: 'brave', results: results.length, upstream: estimateUpstream('brave'), detail: platform };
       res.json({ ok: true, source: 'web', platform, query: queryStr, results });
