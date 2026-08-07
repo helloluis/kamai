@@ -20,6 +20,8 @@ Public URL: `https://kamai.minai.work` — LLM-facing integration spec: [`skill.
 | `POST /api/v1/search/news` | credits | News search — news indexes, exact freshness windows, recency-ranked, non-news sources filtered |
 | `POST /api/v1/search/image` | credits | Image search — multi-provider with automatic failover |
 | `POST /api/v1/search/social` | credits | Social search: reddit, linkedin, tiktok, instagram, youtube, threads, pinterest, facebook posts + events — freshness windows supported |
+| `POST /api/v1/screenshot` | credits | Screenshot the relevant part of a URL — social posts via official embeds |
+| `GET /api/v1/screenshot/:id/image` | — | Fetch the captured image (public, expiring) |
 | `POST /api/v1/brochure/generate` | credits | Generate a PDF brochure from structured content |
 | `GET /api/v1/brochure/:id/download` | — | Download a generated PDF |
 | `GET /api/v1/brochure/templates` | — | List brochure templates |
@@ -46,6 +48,7 @@ Identify with `x-api-key` or `x-wallet-address` header. Sister apps (keys in `SI
 | Browse (no actions) | $0.009 |
 | Browse with actions | $0.013 |
 | Search (web/news/image) | $0.003 |
+| Screenshot | $0.015 |
 | Brochure PDF | $0.050 |
 
 ## How it works
@@ -54,6 +57,7 @@ Identify with `x-api-key` or `x-wallet-address` header. Sister apps (keys in `SI
 - **Auto-sessions**: each caller identity (API key → wallet → IP) gets a persistent browser context; cookies/auth/localStorage survive across requests, expiring after 30 min idle.
 - **Strategies**: known domains bypass Playwright — YouTube → yt-dlp, GitHub → API (`src/browser/strategies/`). A domain memory with a `strategy` field overrides routing.
 - **Domain memories**: learnings saved via `POST /browse/memories` are attached to every browse response for that domain, so agents improve over time.
+- **Screenshots** (`src/browser/screenshot.ts`): social posts are captured by rendering the platform's *own* embed iframe — verified working from this VPS's datacenter IP for X, Instagram, LinkedIn, Facebook, Threads, Bluesky and TikTok, none of which render a usable post from their raw permalink. Reddit blocks the server IP on every surface, so it goes through Apify and is rendered as a capture card. Ordinary pages are cropped to the LCP region. `fullPage` is never used: on a large real page it returns a **0-byte buffer after 51 seconds**, so capture is always `setViewportSize` → `scrollTo` → viewport shot, which is ~150x faster.
 - **Search normalization** (`src/api/searchNormalize.ts`): news and social results are uniform regardless of which provider answered — `publishedAt` is always ISO 8601 or null (providers emit unix epochs, `"2 hours ago"`, `"Aug 5, 2026"`), ranking is newest-first, and `/news` drops non-news sources via a blocklist extendable with `NEWS_BLOCKED_HOSTS`.
 
 ## Deployment
@@ -85,6 +89,12 @@ src/
   browser/
     engine.ts           — shared Chromium instance + stealth context
     browse.ts           — navigate → actions → extract
+    screenshot.ts       — capture engine (region selection, overlay nuke, validation)
+    embeds.ts           — social post URL → official embed URL
+    urlGuard.ts         — SSRF guard, re-checked after redirects
+  screenshot/
+    storage.ts          — SQLite + expiring image blobs
+    reddit.ts           — Apify post fetch + capture-card rendering
     actions.ts          — the 11 action types, overlay dismissal, text= selectors
     extract.ts          — text/links/forms extraction
     session-manager.ts  — per-caller persistent contexts

@@ -54,12 +54,19 @@ const STEALTH_SCRIPTS = `
   });
 `;
 
-export async function createContext(): Promise<BrowserContext> {
+export interface ContextOptions {
+  viewport?: { width: number; height: number };
+  /** 2 gives retina-sharp captures; browse leaves this at 1. */
+  deviceScaleFactor?: number;
+}
+
+export async function createContext(opts: ContextOptions = {}): Promise<BrowserContext> {
   const b = await getBrowser();
   const context = await b.newContext({
     userAgent:
       'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 720 },
+    viewport: opts.viewport ?? { width: 1280, height: 720 },
+    deviceScaleFactor: opts.deviceScaleFactor ?? 1,
     locale: 'en-US',
     timezoneId: 'Asia/Manila',
   });

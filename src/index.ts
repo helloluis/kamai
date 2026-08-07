@@ -17,13 +17,15 @@ import healthRouter from './api/routes/health.js';
 import memoriesRouter, { closeMemoriesDb } from './api/routes/memories.js';
 import brochureRouter, { brochurePublic } from './api/routes/brochure.js';
 import searchRouter from './api/routes/search.js';
+import screenshotRouter, { screenshotPublic } from './api/routes/screenshot.js';
+import { cleanupExpiredScreenshots, closeScreenshotDb } from './screenshot/storage.js';
 import { searchOpsRouter, startActorHealthScheduler } from './api/apifySearch.js';
 import { usageMiddleware, admRouter, closeUsageDb } from './api/usage.js';
 import { shutdown } from './browser/index.js';
 import { landingPage } from './api/landing.js';
 import { closeCreditsDb } from './payment/credits.js';
 import { cleanupExpired, closeBrochureDb } from './brochure/index.js';
-import { PRICE_BROCHURE, PRICE_SEARCH } from './payment/config.js';
+import { PRICE_BROCHURE, PRICE_SEARCH, PRICE_SCREENSHOT } from './payment/config.js';
 import { getMasterAddress } from './payment/wallet.js';
 import { PAYMENT_RECIPIENT } from './payment/config.js';
 
@@ -63,6 +65,11 @@ app.use('/api/v1/brochure', express.json({ limit: '10mb' }), rateLimit, creditPa
 // legacy free /search mount would expose actor IDs publicly).
 app.use('/api/v1/search/health', rateLimit, searchOpsRouter);
 app.use('/api/v1/search', rateLimit, creditPayment(PRICE_SEARCH), searchRouter);
+// Screenshot: image bytes + metadata are public (agents hand the URL to a
+// vision model, and a metadata read should never be billed); POST is paid.
+// Public router mounts FIRST — unmatched requests fall through to the paid one.
+app.use('/api/v1/screenshot', rateLimit, screenshotPublic);
+app.use('/api/v1/screenshot', rateLimit, creditPayment(PRICE_SCREENSHOT), screenshotRouter);
 app.use('/api/v1/session', rateLimit, sessionRouter);
 
 // Legacy routes — backward compatibility with minai/beanie browse-service
@@ -70,6 +77,8 @@ app.use('/api/v1/session', rateLimit, sessionRouter);
 app.use('/browse/memories', memoriesRouter);
 app.use('/browse', browseRouter);
 app.use('/search', searchRouter);
+app.use('/screenshot', screenshotPublic);
+app.use('/screenshot', screenshotRouter);
 
 // Landing page — API documentation for integrating apps
 app.get('/', (_req, res) => {
@@ -97,8 +106,12 @@ if (process.env.WALLET_SEED) {
 
 // Brochure cleanup — every hour, delete expired PDFs
 const CLEANUP_INTERVAL = 60 * 60 * 1000;
-const cleanupTimer = setInterval(cleanupExpired, CLEANUP_INTERVAL);
+const cleanupTimer = setInterval(() => {
+  cleanupExpired();
+  cleanupExpiredScreenshots();
+}, CLEANUP_INTERVAL);
 cleanupExpired(); // run once at startup
+cleanupExpiredScreenshots();
 
 // Actor health — smoke-test every Apify search actor 60s after boot, then
 // every 72h. A failed actor is skipped by /search/social until it recovers.
@@ -118,6 +131,7 @@ const graceful = async () => {
   closeCreditsDb();
   closeMemoriesDb();
   closeBrochureDb();
+  closeScreenshotDb();
   closeUsageDb();
   await shutdown();
   process.exit(0);

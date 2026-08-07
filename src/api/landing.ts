@@ -160,6 +160,31 @@ export function landingPage(): string {
     <span class="method">GET</span>/<span class="method">DELETE</span> <code>/api/v1/session/:id</code> inspect and destroy it.
   </p>
 
+  <h2 id="screenshot">Screenshots</h2>
+  <p><span class="method">POST</span> <code>/api/v1/screenshot</code> &nbsp;·&nbsp; legacy alias <code>/screenshot</code></p>
+  <p>
+    Capture the relevant part of any URL — including social posts, which are captured by rendering
+    the platform's <em>own</em> embed rather than its login wall.
+  </p>
+  <pre>{ "url": "https://x.com/jack/status/20", "mode": "auto", "format": "jpeg" }
+
+// → { "ok": true, "screenshotId": "…", "imageUrl": "/api/v1/screenshot/…/image",
+//     "strategy": "embed:x", "width": 550, "height": 225, "sizeBytes": 37888,
+//     "expiresAt": "…" }</pre>
+  <p class="note"><code>mode</code> <code>auto</code> (default) · <code>relevant</code> · <code>viewport</code> · <code>full</code> · <code>element</code> (needs <code>selector</code>) ·
+  <code>format</code> <code>jpeg</code>/<code>png</code> · <code>width</code> 320–2000 · <code>maxHeight</code> 200–8000 · <code>scale</code> 1–3 ·
+  <code>encoding</code> <code>url</code> (default) or <code>base64</code>.
+  <code>GET /api/v1/screenshot/:id/image</code> is public and needs no auth, so the link can go straight to a vision model.</p>
+  <table>
+    <tr><th>Platform</th><th>Strategy</th></tr>
+    <tr><td><code>x</code> · <code>instagram</code> · <code>linkedin</code> · <code>facebook</code> · <code>threads</code> · <code>bluesky</code></td><td><code>embed:*</code> — full post card via the official embed</td></tr>
+    <tr><td><code>tiktok</code></td><td><code>embed:tiktok</code> — card renders, video poster frame often does not</td></tr>
+    <tr><td><code>reddit</code></td><td><code>apify:reddit-card</code> — rendered from scraped data, ~110s; not a pixel capture</td></tr>
+    <tr><td>any other URL</td><td><code>page:*</code> — cropped to the main content region</td></tr>
+  </table>
+  <p class="note">If an embed returns an error page ("Post not found", a rate-limit notice) the request <em>fails</em> with that reason
+  rather than returning a blank image — a screenshot that proves nothing is worse than no screenshot.</p>
+
   <h2 id="search">Search</h2>
   <p>Web, news, image, and social search across multiple premium providers with automatic failover — one API, no search keys to manage on your side.</p>
   <p><span class="method">POST</span> <code>/api/v1/search/web</code> &nbsp;·&nbsp; legacy alias <code>/search/web</code></p>
@@ -276,6 +301,7 @@ export function landingPage(): string {
     <tr><th></th><th>Route</th><th>Auth</th></tr>
     <tr><td><span class="method">POST</span></td><td><code>/api/v1/browse</code></td><td>key / wallet <span class="note">(legacy /browse: none)</span></td></tr>
     <tr><td><span class="method">POST</span></td><td><code>/api/v1/search/web</code> · <code>/api/v1/search/news</code> · <code>/api/v1/search/image</code> · <code>/api/v1/search/social</code></td><td>key / wallet <span class="note">(legacy /search/*: none)</span></td></tr>
+    <tr><td><span class="method">POST</span></td><td><code>/api/v1/screenshot</code> <span class="note">· <code>GET /:id/image</code> is public</span></td><td>key / wallet</td></tr>
     <tr><td><span class="method">GET·POST·DEL</span></td><td><code>/browse/memories</code> · <code>/api/v1/browse/memories</code></td><td>none</td></tr>
     <tr><td><span class="method">POST</span></td><td><code>/api/v1/brochure/generate</code></td><td>key / wallet</td></tr>
     <tr><td><span class="method">PATCH</span></td><td><code>/api/v1/brochure/:id</code></td><td>key / wallet</td></tr>

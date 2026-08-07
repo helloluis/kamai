@@ -74,6 +74,14 @@ export const PRICE_BROCHURE = 0.05;
 /** Web/image search via Brave proxy (Brave Pro: $5/mo flat → ~$0.0003/call, marked up) */
 export const PRICE_SEARCH = 0.003;
 
+/**
+ * Screenshot capture. Sits just above browse ($0.009) because it is a browse
+ * plus a render, and nowhere near brochure ($0.050). Upstream is ~$0.0002 of
+ * VPS compute for embed/page routes; only the Reddit tier (Apify) costs real
+ * money, and that is a small share of traffic.
+ */
+export const PRICE_SCREENSHOT = 0.015;
+
 /** Get the price for a request based on whether it has actions */
 export function getRequestPrice(hasActions: boolean, isSister: boolean): number {
   const base = hasActions ? PRICE_ACTIONS : PRICE_BROWSE;

@@ -61,6 +61,12 @@ const APIFY_COST: Record<string, { start: number; perResult: number }> = {
   instagram: { start: 0.001, perResult: 0.0027 },
   tiktok: { start: 0.006, perResult: 0.0037 },
   linkedin: { start: 0.00005, perResult: 0.002 },
+  // trudax~reddit-scraper-lite bills an actor-start event per GB ($0.02 at the
+  // 1024MB we request) plus a per-result event. This is the most expensive
+  // upstream on the platform and it runs at a LOSS against PRICE_SCREENSHOT —
+  // Reddit is the only route where that is true, and it is deliberate: no
+  // other path reaches reddit.com from this server's IP at all.
+  reddit: { start: 0.02, perResult: 0.002 },
 };
 
 /** Estimate what one served call cost us upstream. `fetched` counts billed results incl. over-fetch. */
@@ -79,6 +85,15 @@ export function estimateUpstream(
       const c = APIFY_COST[opts.platform ?? ''] ?? { start: 0.005, perResult: 0.002 };
       return c.start + c.perResult * (opts.fetched ?? 1);
     }
+    // Screenshot routes. Self-hosted capture costs only VPS compute — a real
+    // number rather than 0 so the /adm P&L doesn't read the whole price as
+    // margin. Roughly 3s of a Chromium page on a shared box.
+    case 'playwright':
+      return 0.0005;
+    case 'embed':
+      return 0.0002; // embed pages are far lighter DOM than a full site
+    case 'card':
+      return 0.0002;
     default:
       return 0;
   }

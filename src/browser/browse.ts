@@ -7,14 +7,9 @@ import { createContext } from './engine.js';
 import { executeActions, type BrowseAction } from './actions.js';
 import { extractPage, type ExtractedPage } from './extract.js';
 import type { BrowserContext } from 'playwright';
+import { checkUrl, normalizeUrl } from './urlGuard.js';
 
 const DEFAULT_TIMEOUT = parseInt(process.env.DEFAULT_TIMEOUT ?? '15000', 10);
-
-const BLOCKED_PATTERNS = [
-  /^file:/i,
-  /^data:/i,
-  /^(https?:\/\/)?(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|localhost|0\.0\.0\.0)/i,
-];
 
 export interface BrowseResult extends ExtractedPage {
   ok: true;
@@ -58,15 +53,11 @@ export async function browse(
     sessionId = actionsOrOpts.sessionId;
   }
 
-  for (const pat of BLOCKED_PATTERNS) {
-    if (pat.test(url)) {
-      return { ok: false, error: `Blocked URL pattern: ${url}` };
-    }
+  const blocked = checkUrl(url);
+  if (blocked) {
+    return { ok: false, error: blocked };
   }
-
-  if (!/^https?:\/\//i.test(url)) {
-    url = 'https://' + url;
-  }
+  url = normalizeUrl(url);
 
   // Use session context if provided, otherwise create a disposable one
   const isSession = !!sessionContext;
@@ -86,6 +77,14 @@ export async function browse(
 
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+
+      // Re-check where we actually landed. The input-URL check says nothing
+      // about a 302 chain, and 169.254.169.254 (cloud metadata) was not in the
+      // old blocklist at all.
+      const landedBlocked = checkUrl(page.url());
+      if (landedBlocked) {
+        return { ok: false, error: `Blocked after redirect: ${landedBlocked}` };
+      }
 
       let actionLog: string[] = [];
       if (actions.length > 0) {

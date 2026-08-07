@@ -350,6 +350,98 @@ Returns `Content-Type: application/pdf`.
 | `product-showcase` | Product catalogs, menus, portfolios | `title`, `products` |
 | `event-invitation` | Conferences, workshops, launches | `title`, `event` |
 
+## Screenshots
+
+### POST /api/v1/screenshot
+
+Capture the relevant part of a URL as a JPEG or PNG. Works on ordinary web
+pages **and on social posts**, which normally sit behind a login wall.
+
+**Request:**
+```json
+{
+  "url": "https://x.com/jack/status/20",
+  "mode": "auto",
+  "format": "jpeg",
+  "width": 1280,
+  "maxHeight": 4000
+}
+```
+
+**Parameters:**
+- `url` (required) — the page or post to capture
+- `mode` (optional) — `auto` (default), `relevant`, `viewport`, `full`, `element`
+  - `auto` / `relevant` — social posts render via the platform's embed; ordinary
+    pages are cropped to the main content region
+  - `viewport` — above the fold only
+  - `full` — whole page, capped at `maxHeight`
+  - `element` — requires `selector`
+- `selector` (required for `mode: "element"`) — CSS selector
+- `format` (optional) — `jpeg` (default) or `png`
+- `quality` (optional) — JPEG quality 30–100, default 82
+- `width` (optional) — viewport width 320–2000, default 1280 (ignored for social embeds, which use the platform's own width)
+- `maxHeight` (optional) — height cap in CSS px, 200–8000, default 4000
+- `scale` (optional) — device pixel ratio 1–3, default 2 (retina)
+- `encoding` (optional) — `url` (default) or `base64`
+- `expiresInDays` (optional) — 1–30, default 7
+
+**Response:**
+```json
+{
+  "ok": true,
+  "screenshotId": "94880d12-ee97-42d3-be38-3837d4b71110",
+  "imageUrl": "/api/v1/screenshot/94880d12-.../image",
+  "strategy": "embed:x",
+  "sourceUrl": "https://x.com/jack/status/20",
+  "title": "jack on X",
+  "format": "jpeg",
+  "width": 550,
+  "height": 225,
+  "sizeBytes": 37888,
+  "expiresAt": "2026-08-14T12:00:00.000Z",
+  "elapsedMs": 5064
+}
+```
+
+`GET /api/v1/screenshot/:id/image` returns the bytes and needs **no auth**, so
+the URL can be handed straight to a vision model. `GET /api/v1/screenshot/:id`
+returns metadata; `GET /api/v1/screenshot/list` lists your recent captures.
+Both are free.
+
+Prefer `imageUrl` over `encoding: "base64"`. A 1MB PNG pasted into a transcript
+as base64 text costs ~380k tokens; the same image passed as an image is ~1.2k
+visual tokens. Inline base64 is refused above 1.5MB.
+
+### Social coverage
+
+`strategy` tells you which route produced the image — always check it.
+
+| Platform | Strategy | Notes |
+|----------|----------|-------|
+| X / Twitter | `embed:x` | Full post card with engagement counts |
+| Instagram | `embed:instagram` | Posts and reels, with caption |
+| LinkedIn | `embed:linkedin` | Public posts (needs an activity/share id in the URL) |
+| Facebook | `embed:facebook` | Public posts |
+| Threads | `embed:threads` | Public posts |
+| Bluesky | `embed:bluesky` | Handles resolved to DIDs automatically |
+| TikTok | `embed:tiktok` | Card renders; the video poster frame often does not |
+| Reddit | `apify:reddit-card` | **Rendered card, not a pixel capture** — see below |
+| Anything else | `page:*` | `page:lcp`, `page:lcp-container`, `page:landmark`, `page:viewport` |
+
+**Reddit is different.** Reddit blocks this server's IP on every surface, so
+the post is fetched through a third-party scraper and kamai renders a capture
+card from the real data (title, subreddit, author, score, comment count, date,
+body, first image). It is a faithful record of the post's content, not a
+photograph of reddit.com — the `apify:reddit-card` strategy says so explicitly.
+It also takes **~110 seconds**, so set a generous client timeout.
+
+**Failures are loud.** If a social embed returns an error page ("Post not
+found", a rate-limit notice) the request fails with that reason rather than
+returning a blank image. There is deliberately no fallback to rendering the raw
+social URL, because that just captures the login wall and would look like a
+successful capture. A `truncated: true` field means the page was taller than
+`maxHeight` and the capture was cut.
+
 ## Web Search
 
 kamai proxies web, news, image, and social search so callers can run
@@ -585,6 +677,7 @@ only `url` + `text` snippet.
 | `/search/web` | $0.003 |
 | `/search/news` | $0.003 |
 | `/search/image` | $0.003 |
+| `/screenshot` | $0.015 |
 | `/search/social` | $0.003 |
 
 Sister apps get the standard 50% discount.
