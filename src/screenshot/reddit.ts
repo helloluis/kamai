@@ -153,8 +153,11 @@ export function redditCardHtml(post: RedditPost, capturedAt: string): string {
   .link{margin-top:12px;font-size:13.5px;color:#0079d3;word-break:break-all}
   .media{display:block;max-width:100%;max-height:460px;margin-top:14px;border-radius:6px;border:1px solid #edeff1}
   .meta{margin-top:16px;padding-top:12px;border-top:1px solid #edeff1;color:#7c7c7c;font-size:13px}
-  .ft{padding:9px 18px;background:#fafafa;border-top:1px solid #edeff1;color:#9aa0a6;font-size:11.5px;display:flex;justify-content:space-between;gap:12px}
-  .ft code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+  .ft{padding:9px 18px;background:#fafafa;border-top:1px solid #edeff1;color:#9aa0a6;font-size:11.5px;display:flex;justify-content:space-between;align-items:center;gap:14px}
+  /* The permalink is long and the stamp must stay on one line — let the URL
+     ellipsize instead of wrapping the timestamp down four rows. */
+  .ft code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .ft .stamp{white-space:nowrap;flex-shrink:0}
   </style></head><body>
   <div class="card">
     <div class="hd"><span class="sub">${escapeHtml(post.community || 'reddit')}</span>
@@ -164,7 +167,7 @@ export function redditCardHtml(post: RedditPost, capturedAt: string): string {
       ${linkBlock}${bodyBlock}${imgBlock}
       <div class="meta">${escapeHtml(meta)}</div>
     </div>
-    <div class="ft"><code>${escapeHtml(post.url)}</code><span>captured by kamai · ${escapeHtml(capturedAt)}</span></div>
+    <div class="ft"><code>${escapeHtml(post.url)}</code><span class="stamp">captured by kamai · ${escapeHtml(capturedAt)}</span></div>
   </div></body></html>`;
 }
 
