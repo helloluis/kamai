@@ -77,8 +77,12 @@ app.use('/api/v1/session', rateLimit, sessionRouter);
 app.use('/browse/memories', memoriesRouter);
 app.use('/browse', browseRouter);
 app.use('/search', searchRouter);
-app.use('/screenshot', screenshotPublic);
-app.use('/screenshot', screenshotRouter);
+// Legacy alias. Unlike /browse and /search — which are cheap, bounded calls —
+// a capture spawns a browser, so this mount keeps the rate limiter even though
+// it skips payment. Without it, three unauthenticated POSTs can occupy every
+// capture slot.
+app.use('/screenshot', rateLimit, screenshotPublic);
+app.use('/screenshot', rateLimit, screenshotRouter);
 
 // Landing page — API documentation for integrating apps
 app.get('/', (_req, res) => {

@@ -21,7 +21,7 @@ import {
 } from '../../browser/screenshot.js';
 import { isReddit } from '../../browser/embeds.js';
 import { fetchRedditPost, redditCardHtml, redditCircuitStatus } from '../../screenshot/reddit.js';
-import { checkUrl, normalizeUrl } from '../../browser/urlGuard.js';
+import { checkUrlResolved, normalizeUrl } from '../../browser/urlGuard.js';
 import {
   insertScreenshot, getScreenshot, readImage, saveImage, listScreenshots,
 } from '../../screenshot/storage.js';
@@ -63,7 +63,9 @@ router.post('/', async (req, res) => {
     res.status(400).json({ ok: false, error: 'Missing "url" field' });
     return;
   }
-  const blocked = checkUrl(rawUrl);
+  // Resolving DNS here (not just the lexical check) is what stops a public
+  // hostname whose A record is private, e.g. 169.254.169.254.nip.io.
+  const blocked = await checkUrlResolved(rawUrl);
   if (blocked) {
     res.status(400).json({ ok: false, error: blocked });
     return;
@@ -87,6 +89,22 @@ router.post('/', async (req, res) => {
     deviceScaleFactor: Math.min(Math.max(Number(body.scale) || SHOT_DEFAULTS.deviceScaleFactor, 1), 3),
     timeout: Math.min(Math.max(Number(body.timeout) || SHOT_DEFAULTS.timeout, 5_000), 60_000),
   };
+  // Clamping each dimension independently is not enough: 2000 x 8000 at scale 3
+  // is 144M device px, a ~576MB raster for ONE capture — and three of those
+  // concurrently would OOM a box shared with 13 apps. Cap the product and shrink
+  // the scale first (it is the cheapest quality to give up), then the height.
+  const MAX_DEVICE_PX = 24_000_000; // ~96MB raster, comfortably survivable
+  while (opts.width * opts.maxHeight * opts.deviceScaleFactor ** 2 > MAX_DEVICE_PX && opts.deviceScaleFactor > 1) {
+    opts.deviceScaleFactor -= 1;
+  }
+  if (opts.width * opts.maxHeight * opts.deviceScaleFactor ** 2 > MAX_DEVICE_PX) {
+    opts.maxHeight = Math.max(
+      200,
+      Math.floor(MAX_DEVICE_PX / (opts.width * opts.deviceScaleFactor ** 2)),
+    );
+    addUsageNote(res, `maxHeight reduced to ${opts.maxHeight} (pixel budget)`);
+  }
+
   const expiryDays = Math.min(Math.max(Number(body.expiresInDays) || DEFAULT_EXPIRY_DAYS, 1), 30);
 
   const t0 = Date.now();
@@ -190,14 +208,42 @@ router.post('/', async (req, res) => {
     const msg = err?.message || 'Screenshot failed';
     console.error(`[Screenshot] ${ip} | FAIL ${msg.slice(0, 120)} | ${elapsed}ms`);
     addUsageNote(res, `fail: ${msg.slice(0, 80)}`);
-    const timedOut = /timeout|timed out/i.test(msg);
+    // creditPayment only debits on 2xx, so nothing was charged — but
+    // res.locals.chargedUsd still holds the PREDICTED charge and the usage
+    // logger would record it as revenue on a failed request. Zero it, and
+    // record the upstream money that was genuinely spent (Reddit burns ~$0.022
+    // on Apify before a card-render failure).
+    res.locals.chargedUsd = 0;
+    if (isReddit(url)) {
+      res.locals.usage = {
+        source: 'apify',
+        results: 0,
+        upstream: estimateUpstream('apify', { platform: 'reddit', fetched: 1 }),
+        detail: 'reddit-failed',
+      };
+    }
+    const timedOut = /timeout|timed out|deadline/i.test(msg);
     res.status(timedOut ? 504 : 502).json({ ok: false, error: msg.slice(0, 300), elapsedMs: elapsed });
   }
 });
 
-// ─── GET /list — recent captures for this caller (public: read-only, no charge) ───
+// ─── GET /list — recent captures for the calling identity ───
+//
+// Deliberately NOT on the public router. The owner key is a caller-supplied
+// header, so an unauthenticated listing let anyone read any other caller's
+// captures by guessing a wallet address — and an anonymous caller saw every
+// other anonymous caller's captures, since they all share the literal owner
+// "anonymous". Requiring a real identity makes the header at least as
+// trustworthy as the billing identity it mirrors.
 
+// It stays on the public router so a read is never billed, but an identity is
+// now mandatory — "anonymous" is no longer a bucket anyone can list.
 screenshotPublic.get('/list', (req, res) => {
+  const key = (req.headers['x-api-key'] as string) || (req.headers['x-wallet-address'] as string);
+  if (!key) {
+    res.status(401).json({ ok: false, error: 'Listing requires x-api-key or x-wallet-address.' });
+    return;
+  }
   res.json({ ok: true, screenshots: listScreenshots(callerWallet(req)) });
 });
 

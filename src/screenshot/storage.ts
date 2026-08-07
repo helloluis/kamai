@@ -63,7 +63,11 @@ const insertStmt = db.prepare(`
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const getByIdStmt = db.prepare(`SELECT * FROM screenshots WHERE id = ?`);
-const getExpiredStmt = db.prepare(`SELECT * FROM screenshots WHERE expires_at < datetime('now')`);
+// expires_at is written as ISO-8601 ("2026-08-14T12:00:00.000Z"), which is NOT
+// the shape SQLite's datetime('now') produces ("2026-08-14 12:00:00"). Compare
+// against an ISO parameter so the sweep is a real comparison, not a lucky one
+// that happens to work because 'T' sorts after ' '.
+const getExpiredStmt = db.prepare(`SELECT * FROM screenshots WHERE expires_at < ?`);
 const deleteByIdStmt = db.prepare(`DELETE FROM screenshots WHERE id = ?`);
 const listByWalletStmt = db.prepare(
   `SELECT * FROM screenshots WHERE wallet = ? ORDER BY created_at DESC LIMIT 50`,
@@ -91,8 +95,21 @@ export function insertScreenshot(rec: Omit<ScreenshotRecord, 'created_at'>): voi
   );
 }
 
+/**
+ * Fetch a record, treating an expired one as absent.
+ *
+ * The hourly sweep is not an access control: a 1-day capture stays on disk
+ * until the next sweep, so without this check the image remained publicly
+ * downloadable well past the expiry the API reported to the caller.
+ * `expires_at` is stored as an ISO-8601 string, so it is compared in JS rather
+ * than against SQLite's `datetime('now')` format, which is not the same shape.
+ */
 export function getScreenshot(id: string): ScreenshotRecord | null {
-  return (getByIdStmt.get(id) as ScreenshotRecord) ?? null;
+  const rec = (getByIdStmt.get(id) as ScreenshotRecord) ?? null;
+  if (!rec) return null;
+  const expires = Date.parse(rec.expires_at);
+  if (!Number.isNaN(expires) && expires <= Date.now()) return null;
+  return rec;
 }
 
 export function listScreenshots(wallet: string): ScreenshotRecord[] {
@@ -101,7 +118,7 @@ export function listScreenshots(wallet: string): ScreenshotRecord[] {
 
 /** Delete expired screenshots from disk and database. Returns count deleted. */
 export function cleanupExpiredScreenshots(): number {
-  const expired = getExpiredStmt.all() as ScreenshotRecord[];
+  const expired = getExpiredStmt.all(new Date().toISOString()) as ScreenshotRecord[];
   for (const rec of expired) {
     try {
       if (existsSync(rec.file_path)) unlinkSync(rec.file_path);

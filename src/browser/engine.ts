@@ -3,6 +3,7 @@
  * Includes stealth measures to avoid headless browser detection.
  */
 import { chromium, Browser, BrowserContext } from 'playwright';
+import { installSsrfGuard } from './urlGuard.js';
 
 let browser: Browser | null = null;
 
@@ -73,6 +74,11 @@ export async function createContext(opts: ContextOptions = {}): Promise<BrowserC
 
   // Inject stealth scripts before every page load
   await context.addInitScript(STEALTH_SCRIPTS);
+
+  // Vet every request Chromium makes against the SSRF guard. Validating only
+  // the entry URL leaves subresource SSRF (a public page embedding an iframe
+  // pointed at the metadata service) and DNS rebinding wide open.
+  await installSsrfGuard(context);
 
   return context;
 }

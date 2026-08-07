@@ -94,7 +94,12 @@ export async function fetchRedditPost(url: string): Promise<RedditPost> {
     const items = (await resp.json()) as any[];
     const it = Array.isArray(items) ? items[0] : null;
     if (!it || (!it.title && !it.body)) {
-      throw new Error('Apify reddit actor returned no post — deleted, private, or a bad permalink');
+      // The actor worked; this specific post is gone. Tripping the circuit here
+      // would let one caller's dead permalink 503 Reddit for every other caller
+      // for an hour, so flag it as a per-request failure, not an actor failure.
+      const e = new Error('Reddit post not found — deleted, private, or a bad permalink');
+      (e as any).notAnActorFailure = true;
+      throw e;
     }
 
     failedAt = 0;
@@ -118,8 +123,12 @@ export async function fetchRedditPost(url: string): Promise<RedditPost> {
       url: it.url || url,
     };
   } catch (err: any) {
-    failedAt = Date.now();
-    lastError = err?.message?.slice(0, 200) || 'unknown';
+    // Only genuine actor/transport failures open the circuit. A missing post is
+    // a property of the caller's URL, not of the actor's health.
+    if (!err?.notAnActorFailure) {
+      failedAt = Date.now();
+      lastError = err?.message?.slice(0, 200) || 'unknown';
+    }
     throw err;
   }
 }

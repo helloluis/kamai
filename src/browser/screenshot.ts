@@ -102,6 +102,42 @@ export async function withCaptureSlot<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Hard wall-clock deadline for a whole capture.
+ *
+ * `page.evaluate()` takes no timeout and is NOT governed by
+ * setDefaultTimeout — it settles only when the page's JS main thread runs the
+ * callback. A page that spins after load (`window.onload = () => { while(1){} }`)
+ * leaves the await pending forever, so the try/finally that closes the context
+ * and releases the concurrency slot never runs. Three such requests would pin
+ * all three slots permanently and only a restart would clear it.
+ *
+ * `.catch()` does not help: the promise never settles, it does not reject.
+ * The only reliable escape is to stop waiting, so every capture races against
+ * this deadline and the loser's context is force-closed — which does unblock a
+ * spinning renderer.
+ */
+export async function withDeadline<T>(
+  fn: () => Promise<T>,
+  ms: number,
+  onTimeout?: () => Promise<void>,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Capture exceeded ${ms}ms wall-clock deadline`)), ms);
+      }),
+    ]);
+  } catch (err) {
+    await onTimeout?.().catch(() => {});
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export const SHOT_DEFAULTS: ShotOptions = {
   mode: 'auto',
   format: 'jpeg',
@@ -361,6 +397,7 @@ async function captureEmbed(spec: EmbedSpec, opts: ShotOptions): Promise<ShotRes
     deviceScaleFactor: opts.deviceScaleFactor,
   });
   try {
+    return await withDeadline(async () => {
     const page = await context.newPage();
     page.setDefaultTimeout(opts.timeout);
     try {
@@ -425,7 +462,10 @@ async function captureEmbed(spec: EmbedSpec, opts: ShotOptions): Promise<ShotRes
     } finally {
       await page.close().catch(() => {});
     }
+    }, opts.timeout + 30_000);
   } finally {
+    // Closing the context is what unblocks a renderer spinning inside an
+    // evaluate() that would otherwise never settle.
     await context.close().catch(() => {});
   }
 }
@@ -437,6 +477,7 @@ async function capturePage(url: string, opts: ShotOptions): Promise<ShotResult> 
     deviceScaleFactor: opts.deviceScaleFactor,
   });
   try {
+    return await withDeadline(async () => {
     const page = await context.newPage();
     page.setDefaultTimeout(opts.timeout);
     page.on('dialog', (d) => d.dismiss().catch(() => {}));
@@ -465,6 +506,36 @@ async function capturePage(url: string, opts: ShotOptions): Promise<ShotResult> 
       if (opts.mode === 'element') {
         region = await resolveRegion(page, opts.selector);
         if (!region) throw new Error(`Selector not found or too small: ${opts.selector}`);
+
+        // Crop to the element itself. captureRegion only resizes the viewport
+        // and scrolls, so it returns a full-WIDTH band at the element's height
+        // — for a 200x100 sidebar widget that is a 1280x200 strip containing
+        // the whole rest of the page, which is not what "element" means.
+        const el = await page.$('[data-kamai-shot]');
+        const box = await el?.boundingBox();
+        if (el && box && box.height > 0 && box.height <= opts.maxHeight) {
+          await el.scrollIntoViewIfNeeded().catch(() => {});
+          const buf = Buffer.from(
+            await el.screenshot({
+              type: opts.format,
+              ...(opts.format === 'jpeg' ? { quality: opts.quality } : {}),
+              timeout: 15_000,
+            }),
+          );
+          if (validImage(buf, opts.format)) {
+            return {
+              buffer: buf,
+              width: Math.round(box.width),
+              height: Math.round(box.height),
+              format: opts.format,
+              strategy: 'element',
+              pageUrl: landed,
+              title,
+            };
+          }
+        }
+        // Element too tall for a direct shot — fall through to the banded
+        // capture, which at least stays bounded.
       } else if (opts.mode === 'relevant' || opts.mode === 'auto') {
         region = await resolveRegion(page);
       }
@@ -491,6 +562,7 @@ async function capturePage(url: string, opts: ShotOptions): Promise<ShotResult> 
     } finally {
       await page.close().catch(() => {});
     }
+    }, opts.timeout + 30_000);
   } finally {
     await context.close().catch(() => {});
   }
@@ -514,6 +586,7 @@ export async function captureHtml(
     deviceScaleFactor: opts.deviceScaleFactor,
   });
   try {
+    return await withDeadline(async () => {
     const page = await context.newPage();
     page.setDefaultTimeout(opts.timeout);
     try {
@@ -551,6 +624,7 @@ export async function captureHtml(
     } finally {
       await page.close().catch(() => {});
     }
+    }, opts.timeout + 30_000);
   } finally {
     await context.close().catch(() => {});
   }
