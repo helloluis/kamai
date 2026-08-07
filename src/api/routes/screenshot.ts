@@ -15,7 +15,10 @@
  */
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
-import { screenshot, captureHtml, SHOT_DEFAULTS, type ShotMode, type ShotResult } from '../../browser/screenshot.js';
+import {
+  screenshot, captureHtml, withCaptureSlot, captureLoad,
+  SHOT_DEFAULTS, type ShotMode, type ShotResult,
+} from '../../browser/screenshot.js';
 import { isReddit } from '../../browser/embeds.js';
 import { fetchRedditPost, redditCardHtml, redditCircuitStatus } from '../../screenshot/reddit.js';
 import { checkUrl, normalizeUrl } from '../../browser/urlGuard.js';
@@ -88,7 +91,11 @@ router.post('/', async (req, res) => {
 
   const t0 = Date.now();
   const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'anonymous';
-  console.log(`[Screenshot] ${new Date().toISOString()} | ${ip} | REQ ${mode} "${url.slice(0, 90)}"`);
+  const load = captureLoad();
+  console.log(
+    `[Screenshot] ${new Date().toISOString()} | ${ip} | REQ ${mode} "${url.slice(0, 90)}"` +
+      (load.queued ? ` (queued behind ${load.queued})` : ''),
+  );
 
   try {
     let shot: ShotResult;
@@ -105,14 +112,17 @@ router.post('/', async (req, res) => {
         });
         return;
       }
+      // The Apify call happens OUTSIDE the capture slot: it is ~80-110s of
+      // waiting on a third party with no browser held, so holding a slot for it
+      // would idle the gate and starve fast local captures.
       const post = await fetchRedditPost(url);
       const html = redditCardHtml(post, new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC');
-      shot = await captureHtml(html, '.card', { ...opts, width: 700 });
+      shot = await withCaptureSlot(() => captureHtml(html, '.card', { ...opts, width: 700 }));
       shot = { ...shot, strategy: 'apify:reddit-card', pageUrl: post.url, title: post.title };
       upstream = estimateUpstream('apify', { platform: 'reddit', fetched: 1 });
       addUsageNote(res, 'reddit via apify card');
     } else {
-      shot = await screenshot(url, opts);
+      shot = await withCaptureSlot(() => screenshot(url, opts));
       if (shot.strategy.startsWith('embed:')) upstream = estimateUpstream('embed');
     }
 

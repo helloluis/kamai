@@ -21,6 +21,7 @@
  * warning in the docs. Swap it without a redeploy via APIFY_REDDIT_ACTOR.
  */
 import { escapeHtml } from './html.js';
+import { checkUrl } from '../browser/urlGuard.js';
 
 const APIFY_BASE = 'https://api.apify.com/v2';
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN || '';
@@ -97,7 +98,13 @@ export async function fetchRedditPost(url: string): Promise<RedditPost> {
     }
 
     failedAt = 0;
-    const images: string[] = Array.isArray(it.imageUrls) ? it.imageUrls.filter((s: any) => typeof s === 'string') : [];
+    // The card renders imageUrl into an <img src> inside our own browser, so
+    // this value must clear the same SSRF guard as any navigation target — it
+    // arrives from a third-party scraper reading attacker-authorable post
+    // content, not from us.
+    const images: string[] = Array.isArray(it.imageUrls)
+      ? it.imageUrls.filter((s: any) => typeof s === 'string' && !checkUrl(s))
+      : [];
     return {
       title: it.title || '(untitled)',
       community: it.communityName || it.parsedCommunityName || null,

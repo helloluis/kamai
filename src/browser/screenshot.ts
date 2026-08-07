@@ -57,6 +57,51 @@ export interface ShotResult {
   truncated?: boolean;
 }
 
+/**
+ * Concurrency gate.
+ *
+ * Each capture holds its own BrowserContext, and at deviceScaleFactor 2 a
+ * 1280x4000 viewport is a ~40MB raw framebuffer before encoding. This box runs
+ * 13 other apps, so unbounded concurrency is how a burst of screenshot traffic
+ * takes down beaniebot and hiraia rather than just being slow. The per-IP rate
+ * limiter (60/min) does not help here: it is per-IP, and every sister app
+ * arrives from the same nginx upstream.
+ *
+ * Requests queue rather than fail — a slow screenshot is fine, an OOM is not.
+ */
+const MAX_CONCURRENT = parseInt(process.env.SCREENSHOT_CONCURRENCY ?? '3', 10);
+let active = 0;
+const waiting: Array<() => void> = [];
+
+async function acquireSlot(): Promise<void> {
+  if (active < MAX_CONCURRENT) {
+    active++;
+    return;
+  }
+  await new Promise<void>((resolve) => waiting.push(resolve));
+  active++;
+}
+
+function releaseSlot(): void {
+  active--;
+  const next = waiting.shift();
+  if (next) next();
+}
+
+export function captureLoad(): { active: number; queued: number; max: number } {
+  return { active, queued: waiting.length, max: MAX_CONCURRENT };
+}
+
+/** Run a capture under the concurrency gate. */
+export async function withCaptureSlot<T>(fn: () => Promise<T>): Promise<T> {
+  await acquireSlot();
+  try {
+    return await fn();
+  } finally {
+    releaseSlot();
+  }
+}
+
 export const SHOT_DEFAULTS: ShotOptions = {
   mode: 'auto',
   format: 'jpeg',
