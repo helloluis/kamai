@@ -111,7 +111,23 @@ export interface UsageDetail {
   detail?: string; // platform or query, ≤80 chars
 }
 
-const LOGGED_PREFIXES = ['/api/v1/', '/browse', '/search'];
+const LOGGED_PREFIXES = ['/api/v1/', '/browse', '/search', '/screenshot'];
+
+/**
+ * Collapse per-resource paths so the dashboard groups by endpoint rather than
+ * accumulating one distinct row per generated id. Without this, every capture
+ * and every brochure creates its own `endpoint` value and the per-endpoint
+ * rollups become useless.
+ */
+function normalizeEndpoint(path: string): string {
+  return path
+    .replace(/^\/api\/v1/, '')
+    .replace(/\/+$/, '')
+    .replace(
+      /\/(screenshot|brochure)\/[0-9a-f]{8}-[0-9a-f-]{20,}(\/\w+)?$/i,
+      (_m, kind, tail) => `/${kind}/:id${tail || ''}`,
+    ) || '/';
+}
 
 /** Resolve the caller to a display name for the dashboard. */
 function resolveApp(req: Request): string {
@@ -139,7 +155,7 @@ export function usageMiddleware(req: Request, res: Response, next: NextFunction)
   if (!LOGGED_PREFIXES.some((p) => req.path.startsWith(p))) return next();
   // Capture the endpoint NOW — routers rewrite req.url during dispatch, so by
   // the time 'finish' fires the mount prefix is gone (/search/social → /social).
-  const endpoint = req.path.replace(/^\/api\/v1/, '').replace(/\/+$/, '') || '/';
+  const endpoint = normalizeEndpoint(req.path);
   res.on('finish', () => {
     try {
       const u = (res.locals.usage ?? {}) as UsageDetail;
