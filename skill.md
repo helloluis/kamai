@@ -629,14 +629,17 @@ research. One request shape for every platform.
 ```
 
 **Parameters:**
-- `platform` (required) — `reddit`, `linkedin`, `tiktok`, `youtube`,
-  `threads`, `pinterest`, `instagram` (public reels keyword search — runs
-  live, expect 15–60s), `facebook` (public post search — runs live, so
-  expect 20–60s response times; public content only), or `facebook-events`
+- `platform` (required) — `x` (aliases: `twitter`, `x.com`), `reddit`,
+  `linkedin`, `tiktok`, `youtube`, `threads`, `pinterest`, `instagram`
+  (public reels keyword search — runs live, expect 15–60s), `facebook`
+  (public post search — runs live, so expect 20–60s response times; public
+  content only), or `facebook-events`
 - `q` (required) — search query
 - `sort` (optional) — reddit: `relevance|new|top|comment_count`; linkedin:
   `relevance|date`. Omit it to get kamai's newest-first ranking; passing it
   hands ordering back to the platform (so `top` really is top-by-engagement).
+  X picks its own mode from `freshness`: with a window it searches Latest
+  (chronological), without one it searches Top (engagement-ranked).
 - `timeframe` (optional) — reddit: `day|week|month|year|all`; linkedin: `day|week|month`
 - `freshness` (optional) — limit results by age: presets `pd|pw|pm|py` or
   exact durations like `90min`, `2h`, `3d`, `1w`. The exact window is always

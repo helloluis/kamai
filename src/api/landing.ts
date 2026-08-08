@@ -238,6 +238,7 @@ export function landingPage(): string {
   backend. Pass <code>sort</code> to hand ordering back to the platform instead.</p>
   <table>
     <tr><th>Platform</th><th>Notes</th></tr>
+    <tr><td><code>x</code> <span class="note">(aliases <code>twitter</code>, <code>x.com</code>)</span></td><td>Keyword search with engagement counts · uses X's Latest (chronological) mode when <code>freshness</code> is set, Top (engagement-ranked) otherwise</td></tr>
     <tr><td><code>reddit</code></td><td>Full post search · sort: relevance|new|top|comment_count · timeframe: day|week|month|year|all</td></tr>
     <tr><td><code>linkedin</code></td><td>Public post search · sort: relevance|date · timeframe: day|week|month</td></tr>
     <tr><td><code>tiktok</code> · <code>youtube</code> · <code>threads</code> · <code>pinterest</code></td><td>Keyword search</td></tr>
