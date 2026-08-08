@@ -6,17 +6,27 @@
  * rot — vendors abandon them, platforms change their internals — so every
  * actor ID is env-swappable and a 72h health check smoke-tests each one.
  * A failed check (or failed live call) breaks the circuit: /social skips the
- * actor for up to 1h, then lets one call through as a half-open probe whose
- * outcome heals or re-breaks the circuit. Sisters can also force a full
- * re-check via POST /api/v1/search/health/check.
+ * actor, then lets one call through as a half-open probe whose outcome heals or
+ * re-breaks it. Sisters can force a re-check via POST /search/health/check.
  *
- * Health state is in-memory: a restart just re-runs the checks (60s after boot).
- * Smoke checks cost ~$0.01 per actor per run — a few dollars a year at 72h.
+ * Health is PERSISTED in usage.db (src/api/actorHealth.ts) with an exponential
+ * backoff — 1h, 2h, 4h … capped at 24h — and every failure is logged. Probing
+ * still happens, because that is what heals the circuit when a vendor recovers;
+ * it just gets cheaper the longer something stays broken.
+ *
+ * That matters because a health check is a BILLED run, not a free ping. While
+ * state was in-memory, every deploy re-probed every known-dead actor (twice,
+ * with the retry): Instagram burned 66 billed runs against ONE successful
+ * request across a day of restarts.
  */
 import { Router } from 'express';
 import { SISTER_KEYS } from '../payment/config.js';
 import { normalizePublishedAt } from './searchNormalize.js';
-import { startApifyCostScheduler, apifyCostSnapshot } from './apifyCost.js';
+import { startApifyCostScheduler, apifyCostSnapshot, measuredCostPerRun } from './apifyCost.js';
+import {
+  shouldAttempt, recordOutcome, getAllHealth, isKnownFailing, dueForHealthCheck,
+  actorReport, recentFailures, type ActorHealth,
+} from './actorHealth.js';
 
 const APIFY_BASE = 'https://api.apify.com/v2';
 export const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN || '';
@@ -271,20 +281,15 @@ export async function apifyActorSearch(
 }
 
 // ─── Actor health (72h smoke checks) ───
+//
+// The ActorHealth shape now lives with the persistent store in actorHealth.ts;
+// re-exported here so existing importers of this module are unaffected.
 
-export interface ActorHealth {
-  platform: string;
-  actor: string;
-  ok: boolean;
-  latencyMs: number;
-  error?: string;
-  checkedAt: string;
-}
+export type { ActorHealth };
 
 const HEALTH_INTERVAL_MS = 72 * 60 * 60 * 1000;
 /** How long a failed actor is skipped before a live call is let through as a probe. */
 const REPROBE_MS = 60 * 60 * 1000;
-const healthState = new Map<string, ActorHealth>();
 
 /**
  * Should /social attempt this platform's actor right now? Healthy actors and
@@ -294,53 +299,56 @@ const healthState = new Map<string, ActorHealth>();
  * re-breaks it for another window.
  */
 export function shouldAttemptActor(platform: string): boolean {
-  const h = healthState.get(platform);
-  if (!h || h.ok) return true;
-  return Date.now() - Date.parse(h.checkedAt) > REPROBE_MS;
+  return shouldAttempt(platform);
 }
 
 /** Record a live-call outcome as the platform's health (self-healing circuit). */
 export function recordActorOutcome(platform: string, ok: boolean, latencyMs: number, error?: string): void {
   const actor = resolvedActor(platform) as string;
-  healthState.set(platform, {
-    platform,
-    actor,
-    ok,
-    latencyMs,
-    error: ok ? undefined : error?.slice(0, 200),
-    checkedAt: new Date().toISOString(),
-  });
+  // A live call reaching the actor at all means the circuit was half-open, so
+  // this outcome is a probe result as much as a call result.
+  recordOutcome(platform, actor, ok, latencyMs, error, 'live-call');
 }
 
 export function getActorHealth(): ActorHealth[] {
-  return [...healthState.values()];
+  return getAllHealth();
 }
 
 /** Smoke-test every registered actor with a 1-result benign query. Sequential to avoid cost spikes. */
-export async function runActorHealthChecks(): Promise<ActorHealth[]> {
+export async function runActorHealthChecks(force = false): Promise<ActorHealth[]> {
   const checks: ActorHealth[] = [];
   for (const platform of Object.keys(APIFY_SEARCH)) {
     const actor = resolvedActor(platform) as string;
+
+    // Respect the persisted backoff unless explicitly forced. Without this the
+    // boot check re-tested every known-dead actor on every deploy — the single
+    // largest source of wasted Apify spend, since each check is a billed run
+    // (two, with the retry below).
+    if (!force && !dueForHealthCheck(platform)) {
+      console.log(`[ActorHealth] ${platform} ${actor} SKIP — still inside backoff window`);
+      continue;
+    }
+
     const t0 = Date.now();
     let r = await apifyActorSearch(platform, 'coffee', 1);
     // Transient blocks are common (e.g. Instagram rate-walls a single run) —
     // retry once before branding the actor degraded for the whole interval.
-    if (!r.ok) {
+    // Skipped for an actor already failing repeatedly: paying twice to confirm
+    // what the failure log already says is exactly the waste we are removing.
+    if (!r.ok && !isKnownFailing(platform)) {
       console.warn(`[ActorHealth] ${platform} ${actor} first attempt failed (${r.error.slice(0, 120)}) — retrying in 20s`);
       await new Promise((resolve) => setTimeout(resolve, 20_000));
       r = await apifyActorSearch(platform, 'coffee', 1);
     }
+    const latencyMs = Date.now() - t0;
+    recordOutcome(platform, actor, r.ok, latencyMs, r.ok ? undefined : r.error, 'health-check');
     const entry: ActorHealth = {
-      platform,
-      actor,
-      ok: r.ok,
-      latencyMs: Date.now() - t0,
+      platform, actor, ok: r.ok, latencyMs,
       error: r.ok ? undefined : r.error.slice(0, 200),
       checkedAt: new Date().toISOString(),
     };
-    healthState.set(platform, entry);
     checks.push(entry);
-    console.log(`[ActorHealth] ${platform} ${actor} ${r.ok ? 'OK' : 'FAIL'} | ${entry.latencyMs}ms${r.ok ? '' : ` | ${entry.error}`}`);
+    console.log(`[ActorHealth] ${platform} ${actor} ${r.ok ? 'OK' : 'FAIL'} | ${latencyMs}ms${r.ok ? '' : ` | ${entry.error}`}`);
   }
   return checks;
 }
@@ -390,15 +398,34 @@ searchOpsRouter.use((req, res, next) => {
 });
 
 searchOpsRouter.get('/', (_req, res) => {
+  const byPlatform = new Map(getAllHealth().map((h) => [h.platform, h]));
   res.json({
     ok: true,
     intervalHours: HEALTH_INTERVAL_MS / 3_600_000,
     configured: !!APIFY_API_TOKEN,
     actors: Object.keys(APIFY_SEARCH).map((p) => ({
-      ...(healthState.get(p) ?? { status: 'not yet checked' }),
+      ...(byPlatform.get(p) ?? { status: 'not yet checked' }),
       platform: p,
       actor: resolvedActor(p),
     })),
+  });
+});
+
+/**
+ * GET /api/v1/search/health/actors — failure history with an explicit
+ * replace/watch recommendation, so swapping a rotted actor is driven by
+ * numbers rather than a hunch. `?platform=x` adds that actor's recent errors.
+ */
+searchOpsRouter.get('/actors', (req, res) => {
+  const report = actorReport(
+    (p) => measuredCostPerRun(p),
+    (p) => (p === 'reddit' ? 'APIFY_REDDIT_ACTOR' : APIFY_SEARCH[p]?.actorEnv ?? null),
+  );
+  const platform = typeof req.query.platform === 'string' ? req.query.platform : null;
+  res.json({
+    ok: true,
+    actors: report,
+    ...(platform ? { recentFailures: recentFailures(platform, 15) } : {}),
   });
 });
 
@@ -410,7 +437,8 @@ searchOpsRouter.get('/cost', (_req, res) => {
   res.json({ ok: true, apify: apifyCostSnapshot() });
 });
 
-searchOpsRouter.post('/check', async (_req, res) => {
-  const checks = await runActorHealthChecks();
+/** Manual re-check. `?force=1` ignores the backoff — costs a run per actor. */
+searchOpsRouter.post('/check', async (req, res) => {
+  const checks = await runActorHealthChecks(req.query.force === '1' || req.query.force === 'true');
   res.json({ ok: true, checks });
 });

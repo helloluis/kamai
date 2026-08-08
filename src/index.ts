@@ -21,6 +21,7 @@ import screenshotRouter, { screenshotPublic } from './api/routes/screenshot.js';
 import { cleanupExpiredScreenshots, closeScreenshotDb } from './screenshot/storage.js';
 import { searchOpsRouter, startActorHealthScheduler } from './api/apifySearch.js';
 import { usageMiddleware, admRouter, closeUsageDb } from './api/usage.js';
+import { closeActorHealthDb } from './api/actorHealth.js';
 import { shutdown } from './browser/index.js';
 import { landingPage } from './api/landing.js';
 import { closeCreditsDb } from './payment/credits.js';
@@ -136,6 +137,7 @@ const graceful = async () => {
   closeMemoriesDb();
   closeBrochureDb();
   closeScreenshotDb();
+  closeActorHealthDb();
   closeUsageDb();
   await shutdown();
   process.exit(0);
