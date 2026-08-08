@@ -76,6 +76,8 @@ const APIFY_COST: Record<string, { start: number; perResult: number }> = {
   instagram: { start: 0.001, perResult: 0.0027 },
   tiktok: { start: 0.006, perResult: 0.0037 },
   linkedin: { start: 0.00005, perResult: 0.002 },
+  // danek~twitter-scraper: no start fee, $0.00024 per dataset item.
+  x: { start: 0, perResult: 0.00024 },
   // trudax~reddit-scraper-lite bills an actor-start event per GB ($0.02 at the
   // 1024MB we request) plus a per-result event. This is the most expensive
   // upstream on the platform and it runs at a LOSS against PRICE_SCREENSHOT —

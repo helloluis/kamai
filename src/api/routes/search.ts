@@ -235,10 +235,25 @@ const PLATFORM_SITES: Record<string, string> = {
   facebook: 'facebook.com',
   'facebook-events': 'facebook.com',
   instagram: 'instagram.com',
+  x: 'x.com',
 };
 
-/** Supported platforms = SocialCrawl-backed ∪ Apify-backed. */
+/**
+ * Caller-facing aliases. The platform is called X now but half the world still
+ * says Twitter, and agents will send either — accepting both is cheaper than
+ * fielding "unknown platform" errors. Canonical key is `x`, which is what the
+ * actor registry, the cost table and the /adm breakdown all use.
+ */
+const PLATFORM_ALIASES: Record<string, string> = {
+  twitter: 'x',
+  'x.com': 'x',
+  'twitter.com': 'x',
+};
+
+/** Supported platforms = SocialCrawl-backed ∪ Apify-backed, plus aliases. */
 const SUPPORTED_PLATFORMS = [...new Set([...Object.keys(SOCIAL_PLATFORMS), ...Object.keys(APIFY_SEARCH)])];
+/** What we advertise in the error message — aliases included so they're discoverable. */
+const ADVERTISED_PLATFORMS = [...SUPPORTED_PLATFORMS, ...Object.keys(PLATFORM_ALIASES)];
 
 async function socialcrawlFetch(path: string, params: URLSearchParams): Promise<Response> {
   return fetch(`${SOCIALCRAWL_BASE}${path}?${params.toString()}`, {
@@ -722,13 +737,14 @@ router.post('/social', async (req, res) => {
   }
 
   const { platform: platformRaw, q, query, sort, timeframe, cursor, count, freshness } = req.body as Record<string, unknown>;
-  const platform = String(platformRaw || '').toLowerCase().trim();
+  const platformInput = String(platformRaw || '').toLowerCase().trim();
+  const platform = PLATFORM_ALIASES[platformInput] ?? platformInput;
   const queryStr = String(q || query || '').trim();
 
   if (!platform || !SUPPORTED_PLATFORMS.includes(platform)) {
     res.status(400).json({
       ok: false,
-      error: `Missing or unknown "platform". Supported: ${SUPPORTED_PLATFORMS.join(', ')}`,
+      error: `Missing or unknown "platform". Supported: ${ADVERTISED_PLATFORMS.join(', ')}`,
     });
     return;
   }

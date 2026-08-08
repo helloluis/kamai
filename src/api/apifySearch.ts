@@ -181,6 +181,58 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
     },
   },
 
+  // X / Twitter keyword search. Chosen over the alternatives on measured
+  // numbers: 3.06M runs/30d at 100% success, $0.00024 per dataset item and no
+  // actor-start fee — roughly 130x cheaper per item than the TikTok actor and
+  // the cheapest social source we have. apidojo~tweet-scraper has more volume
+  // but 94% success; api-ninja adds a $0.01 start fee that dominates small
+  // queries; apidojo~twitter-scraper-lite bills a $0.016 list-query on top of
+  // tiered items.
+  //
+  // search_type 'Latest' is chronological and 'Top' is engagement-ranked, so
+  // freshness queries take Latest — otherwise a window filters a Top-ranked
+  // page that is mostly older viral posts and returns almost nothing.
+  //
+  // NOTE: max_posts is a floor, not a cap — asking for 3 returned 20. Since
+  // billing is per item, cost is set by what the actor decides to return, so
+  // fetched must count raw items (it does) or the tab understates.
+  x: {
+    defaultActor: 'danek~twitter-scraper',
+    actorEnv: 'APIFY_X_SEARCH_ACTOR',
+    makeInput: (q, n, freshnessMs) => ({
+      query: q,
+      search_type: freshnessMs ? 'Latest' : 'Top',
+      max_posts: n,
+    }),
+    normalize: (it: any, nowMs: number) => {
+      const id = it?.tweet_id || null;
+      const handle = it?.screen_name || it?.user_info?.screen_name || null;
+      if (!id || !handle) return null;
+      // The actor returns engagement counts as STRINGS, and `views` is
+      // sometimes the literal string "None" — coerce both carefully or the
+      // response ships "None" where a number is documented.
+      const num = (v: unknown): number | null => {
+        if (v === null || v === undefined || v === '' || v === 'None') return null;
+        const n2 = Number(v);
+        return Number.isFinite(n2) ? n2 : null;
+      };
+      return {
+        id,
+        // No url field on the item; X accepts any handle for a given id but
+        // the author's own is the canonical permalink.
+        url: `https://x.com/${handle}/status/${id}`,
+        text: it.text || null,
+        author: handle,
+        publishedAt: normalizePublishedAt(it.created_at, nowMs),
+        likes: num(it.favorites),
+        comments: num(it.replies),
+        shares: num(it.retweets),
+        views: num(it.views),
+        meta: it.lang ? { lang: it.lang, quotes: num(it.quotes) } : undefined,
+      };
+    },
+  },
+
   // LinkedIn post keyword search — harvestapi runs ~888K times/month at a
   // ~0.03% failure rate. Reactions/comments scraping stays off: each one is
   // billed as a separate result event. postedLimit/sortBy are first-class
