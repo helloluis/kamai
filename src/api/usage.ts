@@ -306,7 +306,46 @@ function queries() {
             COALESCE(SUM(upstream_usd),0) upstream, COALESCE(SUM(billable_usd),0) billable
      FROM request_log`,
   ).get() as TotalsRow;
-  return { summary, breakdown, recent, totals };
+  const last30 = db.prepare(
+    `SELECT app, COUNT(*) requests, COALESCE(SUM(billable_usd),0) billable,
+            COALESCE(SUM(upstream_usd),0) upstream
+     FROM request_log WHERE created_at >= datetime('now', '-30 days')
+     GROUP BY app`,
+  ).all() as Array<{ app: string; requests: number; billable: number; upstream: number }>;
+  return { summary, breakdown, recent, totals, sisters: sisterConsumption(last30) };
+}
+
+export interface SisterConsumption {
+  app: string;
+  requests: number;
+  billableUsd: number;
+  upstreamUsd: number;
+}
+
+/**
+ * Consumption per NAMED sister app over the window.
+ *
+ * Driven off the names in SISTER_API_KEYS rather than off whatever appears in
+ * the log, so an app that has gone quiet still shows — a sister at $0 is
+ * usually a broken integration, which is exactly what you want to notice.
+ * Names are deduped because one app can hold several keys (beaniebot has two).
+ */
+function sisterConsumption(
+  rows: Array<{ app: string; requests: number; billable: number; upstream: number }>,
+): SisterConsumption[] {
+  const byApp = new Map(rows.map((r) => [r.app, r]));
+  const names = [...new Set(SISTER_KEY_NAMES.values())];
+  return names
+    .map((name) => {
+      const r = byApp.get(name);
+      return {
+        app: name,
+        requests: r?.requests ?? 0,
+        billableUsd: +(r?.billable ?? 0).toFixed(4),
+        upstreamUsd: +(r?.upstream ?? 0).toFixed(4),
+      };
+    })
+    .sort((a, b) => b.billableUsd - a.billableUsd);
 }
 
 const usd = (n: number) => `$${n.toFixed(4)}`;
@@ -318,7 +357,7 @@ admRouter.get('/data.json', (_req, res) => {
 });
 
 admRouter.get('/', (_req, res) => {
-  const { summary, breakdown, recent, totals } = queries();
+  const { summary, breakdown, recent, totals, sisters } = queries();
   // Receivable, not "net". Sister apps are never debited, so charged is ~$0
   // and a charged-minus-cost "net" just showed the whole upstream bill as a
   // loss. What the business actually holds is: cost already incurred, plus the
@@ -364,9 +403,23 @@ admRouter.get('/', (_req, res) => {
   .totals { display: flex; gap: 24px; margin-top: 12px; flex-wrap: wrap; }
   .card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 12px 18px; }
   .card .v { font-size: 20px; font-weight: 700; } .card .k { color: #7d8590; font-size: 12px; }
+  .card.sister { min-width: 150px; }
+  .card .k2 { color: #c9d1d9; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 2px; }
   .note { color: #7d8590; font-size: 12px; margin-top: 32px; }
 </style></head><body>
 <h1>kamai admin</h1>
+
+<h2>Sister apps — last 30 days</h2>
+<div class="totals">
+${sisters.map((s) => `
+  <div class="card sister">
+    <div class="k2">${esc(s.app)}</div>
+    <div class="v acc">${usd(s.billableUsd)}</div>
+    <div class="k">${s.requests.toLocaleString()} request${s.requests === 1 ? '' : 's'} · ${usd(s.upstreamUsd)} cost</div>
+  </div>`).join('') || '<div class="card"><div class="k">No sister apps configured</div></div>'}
+</div>
+
+<h2>All time</h2>
 <div class="totals">
   <div class="card"><div class="v">${totals.requests}</div><div class="k">requests (all time)</div></div>
   <div class="card"><div class="v">${usd(totals.upstream)}</div><div class="k">upstream cost (actual)</div></div>
