@@ -33,6 +33,10 @@
 import Database from 'better-sqlite3';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { priceFor, PRICE_FLOORS } from '../payment/pricing.js';
+
+/** Every Apify-backed platform is a social search, so its floor is the search floor. */
+const SEARCH_FLOOR = PRICE_FLOORS.search;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APIFY_BASE = 'https://api.apify.com/v2';
@@ -49,7 +53,11 @@ const countStmt = db.prepare(
    WHERE source = 'apify' AND detail = ? AND created_at >= ?`,
 );
 const backfillStmt = db.prepare(
-  `UPDATE request_log SET upstream_usd = ?
+  // Rewrite both the cost and the tab: billable is derived from upstream, so
+  // reconciling one without the other would leave the marked-up tab tracking a
+  // stale estimate. For every Apify social platform the 2x markup clears the
+  // $0.003 search floor, so billable is simply twice the reconciled cost.
+  `UPDATE request_log SET upstream_usd = ?, billable_usd = ?
    WHERE source = 'apify' AND detail = ? AND created_at >= ?`,
 );
 const attributedStmt = db.prepare(
@@ -98,36 +106,68 @@ async function resolveActorId(slug: string): Promise<string | null> {
 export async function refreshApifyCosts(platformActors: Record<string, string>): Promise<void> {
   if (!APIFY_API_TOKEN) return;
   try {
-    const [usageResp, runsResp] = await Promise.all([
-      fetch(`${APIFY_BASE}/users/me/usage/monthly?token=${encodeURIComponent(APIFY_API_TOKEN)}`, {
-        signal: AbortSignal.timeout(30_000),
-      }),
-      fetch(`${APIFY_BASE}/actor-runs?token=${encodeURIComponent(APIFY_API_TOKEN)}&limit=1000&desc=1`, {
-        signal: AbortSignal.timeout(30_000),
-      }),
-    ]);
-    if (!usageResp.ok || !runsResp.ok) {
-      console.warn(`[ApifyCost] refresh HTTP ${usageResp.status}/${runsResp.status}`);
+    const usageResp = await fetch(
+      `${APIFY_BASE}/users/me/usage/monthly?token=${encodeURIComponent(APIFY_API_TOKEN)}`,
+      { signal: AbortSignal.timeout(30_000) },
+    );
+    if (!usageResp.ok) {
+      console.warn(`[ApifyCost] usage HTTP ${usageResp.status}`);
       return;
     }
-
     const usage = ((await usageResp.json()) as any)?.data;
     cycleStart = usage?.usageCycle?.startAt?.slice(0, 10) ?? '';
-    cycleTotalUsd = usage?.totalUsageCreditsUsdBeforeVolumeDiscount ?? 0;
     if (!cycleStart) return;
+    // AUTHORITATIVE billed figure: the pay-per-event line after any volume
+    // discount, i.e. exactly what appears on the invoice. Falls back to the
+    // account total. Using this as the anchor is what keeps our number equal to
+    // the real bill regardless of how the per-run data is capped or discounted.
+    const ppe = usage?.monthlyServiceUsage?.PAID_ACTORS_PER_EVENT ?? {};
+    cycleTotalUsd =
+      ppe.amountAfterVolumeDiscountUsd ??
+      ppe.baseAmountUsd ??
+      usage?.totalUsageCreditsUsdAfterVolumeDiscount ??
+      0;
 
-    const runs: any[] = ((await runsResp.json()) as any)?.data?.items ?? [];
+    // Paginate ALL runs in the cycle. The old code took only the most recent
+    // 1000, so once run count crossed 1000 the oldest runs silently dropped out
+    // of the per-actor totals (105 runs / $3.16 missing when this was found).
     const byActor = new Map<string, { runs: number; usd: number }>();
-    for (const r of runs) {
-      // Only runs inside the current cycle — the list spans further back.
-      if (typeof r?.startedAt === 'string' && r.startedAt.slice(0, 10) < cycleStart) continue;
-      const id = r?.actId;
-      const usd = typeof r?.usageTotalUsd === 'number' ? r.usageTotalUsd : null;
-      if (!id || usd === null) continue;
-      const a = byActor.get(id) ?? { runs: 0, usd: 0 };
-      a.runs++; a.usd += usd;
-      byActor.set(id, a);
+    let offset = 0;
+    const PAGE = 1000;
+    const SAFETY_CAP = 20_000; // ~20 pages; a backstop, not a real limit
+    let reachedCycleStart = false;
+    while (offset < SAFETY_CAP && !reachedCycleStart) {
+      const resp = await fetch(
+        `${APIFY_BASE}/actor-runs?token=${encodeURIComponent(APIFY_API_TOKEN)}&limit=${PAGE}&offset=${offset}&desc=1`,
+        { signal: AbortSignal.timeout(30_000) },
+      );
+      if (!resp.ok) break;
+      const items: any[] = ((await resp.json()) as any)?.data?.items ?? [];
+      if (!items.length) break;
+      for (const r of items) {
+        // Runs come newest-first, so the first pre-cycle run means every run
+        // after it is older too — stop paging.
+        if (typeof r?.startedAt === 'string' && r.startedAt.slice(0, 10) < cycleStart) {
+          reachedCycleStart = true;
+          continue;
+        }
+        const id = r?.actId;
+        const usd = typeof r?.usageTotalUsd === 'number' ? r.usageTotalUsd : null;
+        if (!id || usd === null) continue;
+        const a = byActor.get(id) ?? { runs: 0, usd: 0 };
+        a.runs++; a.usd += usd;
+        byActor.set(id, a);
+      }
+      if (items.length < PAGE) break;
+      offset += PAGE;
     }
+
+    // Scale per-actor run costs so they sum to the authoritative billed total.
+    // Run-level usageTotalUsd tracks the invoice proportions closely (verified
+    // within ~1%), but this last step guarantees the parts equal the whole even
+    // if a volume discount or an un-paginated tail leaves a residual.
+    const rawTotal = [...byActor.values()].reduce((n, a) => n + a.usd, 0);
+    const scale = rawTotal > 0 && cycleTotalUsd > 0 ? cycleTotalUsd / rawTotal : 1;
 
     const now = new Date().toISOString();
     for (const [platform, slug] of Object.entries(platformActors)) {
@@ -136,19 +176,22 @@ export async function refreshApifyCosts(platformActors: Record<string, string>):
       const agg = byActor.get(id);
       if (!agg || agg.runs === 0) continue;
 
+      const scaledUsd = agg.usd * scale;
       const kamaiRequests = (countStmt.get(platform, cycleStart) as { n: number }).n;
       // With no kamai requests yet, fall back to per-run so the figure is at
       // least the right order of magnitude rather than dividing by zero.
-      const costPerRequest = kamaiRequests > 0 ? agg.usd / kamaiRequests : agg.usd / agg.runs;
+      const costPerRequest = kamaiRequests > 0 ? scaledUsd / kamaiRequests : scaledUsd / agg.runs;
 
       measured.set(platform, {
-        actorId: id, runs: agg.runs, totalUsd: agg.usd, kamaiRequests, costPerRequest, updatedAt: now,
+        actorId: id, runs: agg.runs, totalUsd: scaledUsd, kamaiRequests, costPerRequest, updatedAt: now,
       });
 
       // Rewrite this cycle's rows to the reconciled figure. Historical rows
       // were written with whatever estimate was live at the time, so without
       // this the dashboard stays permanently wrong for past traffic.
-      if (kamaiRequests > 0) backfillStmt.run(costPerRequest, platform, cycleStart);
+      if (kamaiRequests > 0) {
+        backfillStmt.run(costPerRequest, priceFor(SEARCH_FLOOR, costPerRequest), platform, cycleStart);
+      }
     }
 
     lastRefresh = Date.now();
@@ -157,7 +200,8 @@ export async function refreshApifyCosts(platformActors: Record<string, string>):
       .map(([p, c]) => `${p}=$${c.costPerRequest.toFixed(4)}/req`)
       .join(' ');
     console.log(
-      `[ApifyCost] cycle ${cycleStart}: apify billed $${cycleTotalUsd.toFixed(2)}, ` +
+      `[ApifyCost] cycle ${cycleStart}: apify billed $${cycleTotalUsd.toFixed(2)} ` +
+        `(${byActor.size} actors, scale ${scale.toFixed(3)}), ` +
         `kamai attributed $${attributed.toFixed(2)} — ${summary}`,
     );
   } catch (err: any) {

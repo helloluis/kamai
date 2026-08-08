@@ -314,7 +314,52 @@ function queries() {
      FROM request_log WHERE created_at >= datetime('now', '-30 days')
      GROUP BY app`,
   ).all() as Array<{ app: string; requests: number; billable: number; upstream: number }>;
-  return { summary, breakdown, recent, totals, sisters: sisterConsumption(last30) };
+  // Upstream is several SEPARATE vendor bills (Apify, SocialCrawl, Brave,
+  // Serper) plus self-hosted compute — collapsing them into one number invites
+  // comparing the sum against a single vendor's balance, which is what happened.
+  const providers = db.prepare(
+    `SELECT COALESCE(source,'self') provider, COUNT(*) requests,
+            COALESCE(SUM(upstream_usd),0) upstream
+     FROM request_log WHERE upstream_usd > 0
+     GROUP BY source ORDER BY upstream DESC`,
+  ).all() as Array<{ provider: string; requests: number; upstream: number }>;
+  return {
+    summary, breakdown, recent, totals,
+    sisters: sisterConsumption(last30),
+    providers: providerBreakdown(providers),
+  };
+}
+
+/** Which vendor each `source` value is actually billed by. */
+const PROVIDER_VENDOR: Record<string, string> = {
+  apify: 'Apify',
+  socialcrawl: 'SocialCrawl',
+  brave: 'Brave',
+  serper: 'Serper',
+  page: 'self-hosted',
+  embed: 'self-hosted',
+  card: 'self-hosted',
+  playwright: 'self-hosted',
+  self: 'self-hosted',
+};
+
+interface ProviderRow { vendor: string; requests: number; upstreamUsd: number }
+
+/** Group raw `source` rows into the vendor that actually invoices for them. */
+function providerBreakdown(
+  rows: Array<{ provider: string; requests: number; upstream: number }>,
+): ProviderRow[] {
+  const byVendor = new Map<string, ProviderRow>();
+  for (const r of rows) {
+    const vendor = PROVIDER_VENDOR[r.provider] ?? r.provider;
+    const v = byVendor.get(vendor) ?? { vendor, requests: 0, upstreamUsd: 0 };
+    v.requests += r.requests;
+    v.upstreamUsd += r.upstream;
+    byVendor.set(vendor, v);
+  }
+  return [...byVendor.values()]
+    .map((v) => ({ ...v, upstreamUsd: +v.upstreamUsd.toFixed(4) }))
+    .sort((a, b) => b.upstreamUsd - a.upstreamUsd);
 }
 
 export interface SisterConsumption {
@@ -359,7 +404,7 @@ admRouter.get('/data.json', (_req, res) => {
 });
 
 admRouter.get('/', (_req, res) => {
-  const { summary, breakdown, recent, totals, sisters } = queries();
+  const { summary, breakdown, recent, totals, sisters, providers } = queries();
   // Receivable, not "net". Sister apps are never debited, so charged is ~$0
   // and a charged-minus-cost "net" just showed the whole upstream bill as a
   // loss. What the business actually holds is: cost already incurred, plus the
@@ -420,6 +465,17 @@ ${sisters.map((s) => `
     <div class="k">${s.requests.toLocaleString()} request${s.requests === 1 ? '' : 's'} · ${usd(s.upstreamUsd)} cost</div>
   </div>`).join('') || '<div class="card"><div class="k">No sister apps configured</div></div>'}
 </div>
+
+<h2>Upstream cost by vendor — all time</h2>
+<div class="totals">
+${providers.map((p) => `
+  <div class="card">
+    <div class="k2">${esc(p.vendor)}</div>
+    <div class="v">${usd(p.upstreamUsd)}</div>
+    <div class="k">${p.requests.toLocaleString()} request${p.requests === 1 ? '' : 's'}</div>
+  </div>`).join('') || '<div class="card"><div class="k">No upstream spend yet</div></div>'}
+</div>
+<p class="note" style="margin-top:8px">Each vendor is a <b>separate</b> subscription with its own balance — Apify, SocialCrawl, Brave and Serper are billed independently. The all-time "upstream cost" below is their sum, not any single vendor's bill.</p>
 
 <h2>All time</h2>
 <div class="totals">
