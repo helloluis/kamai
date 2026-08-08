@@ -15,6 +15,7 @@
  */
 import type { Request, Response, NextFunction } from 'express';
 import { resolveWallet, getAccount, canAfford, chargeRequest, hasUsedDailyFree } from './credits.js';
+import { priceFor } from './pricing.js';
 import {
   CELO_NETWORK,
   USDC_ADDRESS,
@@ -48,6 +49,14 @@ const DEMO_WALLET = '0x0000000000000000000000000000000000000000';
 
 export function creditPayment(costOverride?: number) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    // The floor for this endpoint. The final price is cost-plus —
+    // max(floor, 2 x measured upstream) — and can only be settled once the
+    // request has run and we know which provider answered. usage.ts reads this
+    // to compute billable_usd for every caller, sister apps included.
+    const floor = costOverride ??
+      getRequestPrice(Array.isArray(req.body?.actions) && req.body.actions.length > 0, false);
+    res.locals.priceFloor = floor;
+
     // Sister apps bypass payment entirely — check FIRST before wallet resolution
     if (isSisterCaller(req)) {
       res.setHeader('X-Sister', 'true');
@@ -70,9 +79,13 @@ export function creditPayment(costOverride?: number) {
       return next();
     }
 
-    // Determine pricing
-    const cost = costOverride ??
-      getRequestPrice(Array.isArray(req.body?.actions) && req.body.actions.length > 0, false);
+    // Affordability is gated on the floor, but the debit is the settled
+    // cost-plus price, which can be higher (an Instagram social search costs
+    // ~$0.46 against a $0.003 floor). A caller can therefore end a request
+    // slightly negative; the next call is refused until they top up. That is
+    // standard for metered billing and beats pre-charging the worst case,
+    // which would block every small-balance caller from cheap requests.
+    const cost = floor;
 
     // Check if user can afford it (includes daily freebie check)
     if (!canAfford(wallet, cost)) {
@@ -100,23 +113,31 @@ export function creditPayment(costOverride?: number) {
 
     // Predicted charge for usage analytics (first request of the day is free,
     // mirroring chargeRequest's logic). Set now so the usage middleware's
-    // finish listener sees it regardless of listener ordering.
+    // finish listener sees it regardless of listener ordering. Corrected below
+    // once the settled price is known.
     res.locals.chargedUsd = hasUsedDailyFree(wallet) ? cost : 0;
 
     res.on('finish', () => {
       if (res.statusCode >= 200 && res.statusCode < 300) {
         const hasActions = Array.isArray(req.body?.actions) && req.body.actions.length > 0;
-        const { charged, wasFree } = chargeRequest(wallet, url, cost, hasActions);
+        // Settle at the published rate now that the provider — and therefore
+        // the real cost — is known.
+        const upstream = (res.locals.usage as { upstream?: number } | undefined)?.upstream;
+        const settled = priceFor(floor, upstream);
+        res.locals.chargedUsd = hasUsedDailyFree(wallet) ? settled : 0;
+        const { charged, wasFree } = chargeRequest(wallet, url, settled, hasActions);
         if (wasFree) {
           console.log(`[Credits] FREE daily request for ${wallet.slice(0, 10)}... → ${url}`);
         } else if (charged > 0) {
-          console.log(`[Credits] -$${charged.toFixed(3)} from ${wallet.slice(0, 10)}... → ${url}`);
+          console.log(`[Credits] -$${charged.toFixed(4)} from ${wallet.slice(0, 10)}... → ${url}`);
         }
       }
     });
 
-    // Add pricing info to response headers
-    res.setHeader('X-Request-Cost', cost.toFixed(3));
+    // Floor, not the settled price — the real figure isn't known until the
+    // response is on its way out, by which point headers are already sent.
+    res.setHeader('X-Request-Price-Floor', floor.toFixed(4));
+    res.setHeader('X-Pricing', 'cost-plus:100%');
 
     next();
   };

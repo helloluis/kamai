@@ -18,9 +18,10 @@ import memoriesRouter, { closeMemoriesDb } from './api/routes/memories.js';
 import brochureRouter, { brochurePublic } from './api/routes/brochure.js';
 import searchRouter from './api/routes/search.js';
 import screenshotRouter, { screenshotPublic } from './api/routes/screenshot.js';
+import spendRouter, { closeSpendDb } from './api/routes/spend.js';
 import { cleanupExpiredScreenshots, closeScreenshotDb } from './screenshot/storage.js';
 import { searchOpsRouter, startActorHealthScheduler } from './api/apifySearch.js';
-import { usageMiddleware, admRouter, closeUsageDb } from './api/usage.js';
+import { usageMiddleware, admRouter, closeUsageDb, backfillBillable } from './api/usage.js';
 import { closeActorHealthDb } from './api/actorHealth.js';
 import { shutdown } from './browser/index.js';
 import { landingPage } from './api/landing.js';
@@ -45,6 +46,10 @@ app.use('/health', healthRouter);
 
 // Admin dashboard — Basic auth (ADMIN_USER/ADMIN_PASS), per-app cost analytics
 app.use('/adm', rateLimit, admRouter);
+
+// Spend / running tab — free to read, and never charged: billing callers to
+// look at their bill would be absurd. Mounted before the paid routes.
+app.use('/api/v1/spend', rateLimit, spendRouter);
 
 // Account & credit management
 app.use('/api/v1/account', rateLimit, accountRouter);
@@ -118,6 +123,10 @@ const cleanupTimer = setInterval(() => {
 cleanupExpired(); // run once at startup
 cleanupExpiredScreenshots();
 
+// Price any request rows logged before cost-plus pricing existed, so tabs and
+// the Receivable bucket reflect all traffic rather than only new traffic.
+backfillBillable();
+
 // Actor health — smoke-test every Apify search actor 60s after boot, then
 // every 72h. A failed actor is skipped by /search/social until it recovers.
 startActorHealthScheduler();
@@ -125,7 +134,7 @@ startActorHealthScheduler();
 // Start
 app.listen(PORT, HOST, () => {
   console.log(`[kamai] API server listening on ${HOST}:${PORT}`);
-  console.log(`[kamai] Pricing: $0.009/browse, $0.013/actions, $${PRICE_BROCHURE}/brochure, $${PRICE_SEARCH}/search`);
+  console.log('[kamai] Pricing: cost-plus 100% markup, floored — rates at /api/v1/spend/rates');
   console.log(`[kamai] Docs: /skill.md  Health: /health`);
 });
 
@@ -138,6 +147,7 @@ const graceful = async () => {
   closeBrochureDb();
   closeScreenshotDb();
   closeActorHealthDb();
+  closeSpendDb();
   closeUsageDb();
   await shutdown();
   process.exit(0);
