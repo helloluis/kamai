@@ -66,16 +66,27 @@ export interface ActorHealth {
 }
 
 /**
- * Backoff schedule. Starts at the old fixed 1h so a blip still recovers fast,
- * then doubles per consecutive failure to a 24h ceiling: 1h, 2h, 4h, 8h, 16h,
- * 24h… A dead actor therefore costs ~1 probe/day instead of 24.
+ * Reprobe backoff by consecutive-failure count.
+ *
+ * These actors 400 intermittently, so the FIRST retry is fast (2 min) — a
+ * transient blip must not sideline a platform onto the degraded fallback for an
+ * hour. It escalates only as failures pile up, so a genuinely dead actor still
+ * settles to ~1 probe/day rather than being retried every 2 minutes forever
+ * (each probe is a billed Apify run). The last entry is the cap for all further
+ * failures.
  */
-const BASE_REPROBE_MS = 60 * 60 * 1000;
-const MAX_REPROBE_MS = 24 * 60 * 60 * 1000;
+const REPROBE_SCHEDULE_MS = [
+  2 * 60_000,        // 1st failure → 2 min
+  5 * 60_000,        // 2nd → 5 min
+  15 * 60_000,       // 3rd → 15 min
+  60 * 60_000,       // 4th → 1 h
+  6 * 60 * 60_000,   // 5th → 6 h
+  24 * 60 * 60_000,  // 6th+ → 24 h (cap)
+];
 
 function backoffMs(consecutiveFailures: number): number {
-  const n = Math.max(1, consecutiveFailures);
-  return Math.min(BASE_REPROBE_MS * 2 ** (n - 1), MAX_REPROBE_MS);
+  const i = Math.min(Math.max(consecutiveFailures, 1), REPROBE_SCHEDULE_MS.length) - 1;
+  return REPROBE_SCHEDULE_MS[i];
 }
 
 const getStmt = db.prepare(`SELECT * FROM actor_health WHERE platform = ?`);
