@@ -568,9 +568,27 @@ is anything to find.
       "publishedAt": "2026-08-07T09:12:00.000Z",
       "age": "2 hours ago"
     }
-  ]
+  ],
+  "nextCursor": "eyJ2Ijox…",
+  "hasMore": true
 }
 ```
+
+**Getting maximum coverage.** For a thorough sweep of a topic or brand (not just
+the top few headlines), use both levers together:
+
+1. Set a large `count` (30–50) so each page is filled past the filters.
+2. While `hasMore` is `true`, repeat the request with `cursor: <nextCursor>`
+   (same `q`), accumulating and deduping results by `url`, until `hasMore` is
+   `false`.
+
+Two things to expect. Google News's index has **finite depth per query** — a
+busy brand yields well into the hundreds across pages, a niche one far fewer, so
+`hasMore: false` is the real end of coverage, not a bug. And **recency trades
+against depth**: a tight `freshness` window (say `2h`) caps how much exists to
+find, so if you want both volume and recent reporting, a moderate window
+(`pd`/`pw`) with paging is the sweet spot. Each internal page is one upstream
+credit, so a deep sweep costs proportionally more than a single lookup.
 
 Results are ranked newest-first by default. Relevance ranking surfaces
 evergreen explainers and hub pages that match the keywords but aren't recent
