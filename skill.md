@@ -638,14 +638,16 @@ research. One request shape for every platform.
 - `sort` (optional) — reddit: `relevance|new|top|comment_count`; linkedin:
   `relevance|date`. Omit it to get kamai's newest-first ranking; passing it
   hands ordering back to the platform (so `top` really is top-by-engagement).
-  X picks its own mode from `freshness`: with a window it searches Latest
-  (chronological), without one it searches Top (engagement-ranked).
+  X always searches chronologically (required for date-windowed paging).
 - `timeframe` (optional) — reddit: `day|week|month|year|all`; linkedin: `day|week|month`
 - `freshness` (optional) — limit results by age: presets `pd|pw|pm|py` or
   exact durations like `90min`, `2h`, `3d`, `1w`. The exact window is always
   enforced server-side; tight windows may return fewer than `count` results.
-- `count` (optional) — max results, default 10, max 50
-- `cursor` (optional) — pass the previous response's `nextCursor` to page
+  When paginating, `freshness` is the **floor** of the backfill — paging stops
+  once it walks past the window.
+- `count` (optional) — results per page, default 10, max 100
+- `cursor` (optional) — pass the previous response's `nextCursor` to fetch the
+  next page. See **Pagination & backfill** below.
 
 **Response:**
 ```json
@@ -677,6 +679,46 @@ If a platform's primary backend is unavailable, queries automatically fall
 back through secondary providers, then a site-scoped web search
 (`source: "web"`) where the platform indexes well — those results contain
 only `url` + `text` snippet.
+
+### Pagination & backfill
+
+A single request returns one page (up to `count`, max 100). To retrieve more —
+e.g. a multi-day brand backfill — page with the cursor:
+
+1. Make the request without a `cursor`.
+2. If the response has `hasMore: true`, send the same request again with
+   `cursor` set to the response's `nextCursor`.
+3. Repeat until `hasMore` is `false` (or `nextCursor` is absent).
+
+```json
+// page 1
+{ "platform": "x", "q": "GCash", "count": 100 }
+// → { ..., "nextCursor": "eyJ2Ijox…", "hasMore": true }
+
+// page 2
+{ "platform": "x", "q": "GCash", "count": 100, "cursor": "eyJ2Ijox…" }
+// → { ..., "nextCursor": "eyJ2Ijoy…", "hasMore": true }
+```
+
+Rules and guarantees:
+
+- **Keep the query identical across pages.** The cursor is bound to the
+  `platform` + `q` it was issued for; replaying it against a different search
+  returns `400 Invalid or mismatched cursor`.
+- **Dedupe by `id`.** Pages walk strictly backward in time and do not overlap
+  in normal use, but you should still dedupe on `id` as a guard against posts
+  sharing a boundary timestamp.
+- **Bound the backfill with `freshness`.** `freshness: "7d"` makes paging stop
+  automatically once it reaches 7 days back. Without it, paging continues as
+  far as the provider's index allows — you control depth by when you stop.
+- **Where it works:** cursor pagination is available on **x**, and on the
+  platforms served by the primary social provider (**reddit, linkedin, tiktok,
+  youtube, threads, pinterest**). **facebook** and **instagram** return a
+  single page only — their upstream has no paging, so a repeated request just
+  re-returns the same results.
+- A high-volume brand produces far more than you might expect. "GCash" runs
+  ~70 posts/hour on X — a genuine 7-day backfill is thousands of items across
+  ~100+ pages, not one page.
 
 ### Cost
 

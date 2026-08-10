@@ -238,7 +238,7 @@ export function landingPage(): string {
   backend. Pass <code>sort</code> to hand ordering back to the platform instead.</p>
   <table>
     <tr><th>Platform</th><th>Notes</th></tr>
-    <tr><td><code>x</code> <span class="note">(aliases <code>twitter</code>, <code>x.com</code>)</span></td><td>Keyword search with engagement counts · uses X's Latest (chronological) mode when <code>freshness</code> is set, Top (engagement-ranked) otherwise</td></tr>
+    <tr><td><code>x</code> <span class="note">(aliases <code>twitter</code>, <code>x.com</code>)</span></td><td>Keyword search with engagement counts · chronological · <b>cursor pagination</b> for multi-day backfill (page with <code>nextCursor</code>; bound with <code>freshness</code>)</td></tr>
     <tr><td><code>reddit</code></td><td>Full post search · sort: relevance|new|top|comment_count · timeframe: day|week|month|year|all</td></tr>
     <tr><td><code>linkedin</code></td><td>Public post search · sort: relevance|date · timeframe: day|week|month</td></tr>
     <tr><td><code>tiktok</code> · <code>youtube</code> · <code>threads</code> · <code>pinterest</code></td><td>Keyword search</td></tr>
@@ -249,7 +249,10 @@ export function landingPage(): string {
   <p class="note"><code>freshness</code> limits results by age: presets <code>pd|pw|pm|py</code> or exact durations
   like <code>90min</code>, <code>2h</code>, <code>3d</code>, <code>1w</code> — the exact window is always enforced server-side;
   tight windows may return fewer than <code>count</code> results.
-  Page through results by passing <code>nextCursor</code> back as <code>cursor</code>.
+  <b>Pagination:</b> one page per request (<code>count</code> max 100); pass the response's <code>nextCursor</code> back as
+  <code>cursor</code> and repeat while <code>hasMore</code> is true. Cursors are bound to their <code>platform</code>+<code>q</code>;
+  bound a backfill with <code>freshness</code>. Available on <code>x</code>, <code>reddit</code>, <code>linkedin</code>, <code>tiktok</code>,
+  <code>youtube</code>, <code>threads</code>, <code>pinterest</code>; <code>facebook</code>/<code>instagram</code> return a single page.
   If a platform's primary backend is unavailable, queries automatically fall back through secondary providers,
   then a site-scoped web search (<code>source: "web"</code>) where the platform indexes well.</p>
 

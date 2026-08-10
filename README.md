@@ -19,7 +19,7 @@ Public URL: `https://kamai.minai.work` — LLM-facing integration spec: [`skill.
 | `POST /api/v1/search/web` | credits | Web search — multi-provider with automatic failover |
 | `POST /api/v1/search/news` | credits | News search — news indexes, exact freshness windows, recency-ranked, non-news sources filtered |
 | `POST /api/v1/search/image` | credits | Image search — multi-provider with automatic failover |
-| `POST /api/v1/search/social` | credits | Social search: x/twitter, reddit, linkedin, tiktok, instagram, youtube, threads, pinterest, facebook posts + events — freshness windows supported |
+| `POST /api/v1/search/social` | credits | Social search: x/twitter, reddit, linkedin, tiktok, instagram, youtube, threads, pinterest, facebook posts + events — freshness windows + cursor pagination (x + SocialCrawl platforms) |
 | `POST /api/v1/screenshot` | credits | Screenshot the relevant part of a URL — social posts via official embeds |
 | `GET /api/v1/screenshot/:id/image` | — | Fetch the captured image (public, expiring) |
 | `POST /api/v1/brochure/generate` | credits | Generate a PDF brochure from structured content |
