@@ -953,27 +953,32 @@ router.post('/social', async (req, res) => {
     const fallback = await braveWebSearch(siteQuery, requestedCount, braveFreshness);
     const elapsed = Date.now() - t0;
     if (fallback.ok) {
-      // Brave's `age` is a fuzzy string ("2 days ago") — normalize it so this
-      // tier's publishedAt is a real ISO timestamp like every other tier's,
-      // then re-apply the window it couldn't enforce natively.
-      // Brave merges its news bucket into the result set, so it returns more
-      // rows than the count we asked for — slice like the other two tiers do,
-      // otherwise `count` silently means nothing whenever this tier answers.
-      const results = rank(
-        fallback.results
-          .map((r) => ({
-            id: null,
-            url: r.url,
-            text: r.description,
-            author: null,
-            publishedAt: normalizePublishedAt(r.age, now),
-            likes: null, comments: null, shares: null, views: null,
-          }))
-          .filter(withinWindow),
-      ).slice(0, requestedCount);
-      console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${results.length} results | ${elapsed}ms (brave site fallback)`);
+      // Last-resort tier. Brave's site: index includes years-old posts, and its
+      // `age` string is NOT trustworthy — it will report a 2018 post as "1 week
+      // ago". Fabricating publishedAt from it stamps old content with a recent
+      // date that then passes the freshness filter, silently poisoning a
+      // freshness/backfill query with stale results. So we do NOT claim a date
+      // we can't stand behind: publishedAt is null, which the exact-window
+      // filter treats as unprovable and drops. Net effect — a freshness query
+      // degrades to an honest empty result during an actor outage rather than
+      // returning old junk labelled as recent.
+      // (Brave also merges its news bucket in, returning more rows than asked;
+      // the slice keeps `count` meaningful.)
+      const mapped = fallback.results.map((r) => ({
+        id: null,
+        url: r.url,
+        text: r.description,
+        author: null,
+        publishedAt: null,
+        likes: null, comments: null, shares: null, views: null,
+      }));
+      const results = rank(mapped.filter(withinWindow)).slice(0, requestedCount);
+      if (freshnessMs && mapped.length && !results.length) {
+        addUsageNote(res, 'brave fallback dropped — no verifiable dates for freshness');
+      }
+      console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${results.length} results | ${elapsed}ms (brave site fallback${freshnessMs ? ', dateless dropped' : ''})`);
       res.locals.usage = { source: 'brave', results: results.length, upstream: estimateUpstream('brave'), detail: platform };
-      res.json({ ok: true, source: 'web', platform, query: queryStr, results });
+      res.json({ ok: true, source: 'web', platform, query: queryStr, results, hasMore: false });
       return;
     }
     console.error(`[Search/social] ${ts} | ${ip} | FAIL ${platform} | ${fallback.error.slice(0, 80)} | ${elapsed}ms`);
