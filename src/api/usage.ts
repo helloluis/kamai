@@ -93,7 +93,9 @@ export function estimateUpstream(
 ): number {
   switch (source) {
     case 'serper':
-      return 0.001;
+      // News search walks multiple Google-News pages (one Serper credit each);
+      // `credits` carries the page count. Web/image are single-call (credits=1).
+      return 0.001 * Math.max(opts.credits ?? 1, 1);
     case 'brave':
       return 0.005; // web / llm_context / images — Brave Pro effective rate
     case 'socialcrawl':

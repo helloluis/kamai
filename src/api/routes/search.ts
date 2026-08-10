@@ -422,11 +422,23 @@ router.post('/news', async (req, res) => {
     return;
   }
 
-  const { q, query, count, freshness, country, sort, filterSources } = req.body as Record<string, unknown>;
+  const { q, query, count, freshness, country, sort, filterSources, cursor } = req.body as Record<string, unknown>;
   const queryStr = String(q || query || '').trim();
   if (!queryStr) {
     res.status(400).json({ ok: false, error: 'Missing "q" field' });
     return;
+  }
+
+  // Pagination cursor = the Serper Google-News page to resume from, query-bound
+  // (reuses the same opaque, tamper-checked codec as /social).
+  let startPage = 1;
+  if (typeof cursor === 'string' && cursor) {
+    const dec = decodeApifyCursor(cursor, 'news', queryStr);
+    if (dec === null) {
+      res.status(400).json({ ok: false, error: 'Invalid or mismatched cursor — pass the nextCursor from a prior response for the same query.' });
+      return;
+    }
+    startPage = Math.max(1, dec);
   }
 
   const freshnessMs = parseFreshness(freshness) ?? undefined;
@@ -441,10 +453,13 @@ router.post('/news', async (req, res) => {
   // Source filtering is on by default — see isNewsSource for what it drops.
   const useSourceFilter = filterSources !== false;
 
-  const requestedCount = Math.min(Math.max(Number(count) || 10, 1), 20);
-  // Both the freshness window and the source filter drop items after the
-  // provider has ranked them, so always ask upstream for more than we need.
-  // Neither Serper nor Brave prices per result, so the over-fetch is free.
+  // Cap raised 20 -> 50 per page. Serper's Google News returns a FIXED 10
+  // items per page regardless of `num`, so filling a larger count (and
+  // surviving the freshness + source filters) means walking multiple Serper
+  // pages — see the loop below. Deeper still: paginate with the cursor.
+  const requestedCount = Math.min(Math.max(Number(count) || 10, 1), 50);
+  // The Brave fallback tiers DO honor a count, so over-fetch there to survive
+  // the filters. (Serper ignores it and is paged instead.)
   const fetchCount = Math.min(requestedCount * 3, 50);
 
   const ts = new Date().toISOString();
@@ -527,34 +542,79 @@ router.post('/news', async (req, res) => {
     res.json({ ok: true, source: tier, query: queryStr, results });
   };
 
-  // ── 1. Serper News (primary — Google News index) ──
+  // ── 1. Serper News (primary — Google News index), paged ──
+  //
+  // Serper returns a fixed 10 news items per page, so we walk pages until we've
+  // collected `requestedCount` results that survive the filters, or hit a
+  // per-request page budget, or Google runs out. Each page is one Serper
+  // credit; the budget bounds cost per request while the cursor lets a caller
+  // go arbitrarily deep across requests.
   if (SERPER_API_KEY) {
-    try {
-      const body: Record<string, unknown> = { q: queryStr, num: fetchCount };
-      if (typeof country === 'string' && country && country.toUpperCase() !== 'ALL') {
-        body.gl = country.toLowerCase();
-      }
-      if (serperTbs) body.tbs = serperTbs;
+    const MAX_PAGES_PER_REQUEST = 10; // up to ~100 candidates / ~$0.01 per call
+    const kept: NewsResult[] = [];
+    let page = startPage;
+    let rawSeen = 0;
+    let serperExhausted = false;
+    let firstPageFailed = false;
 
-      const serperResp = await serperFetch('/news', body);
-      if (serperResp.ok) {
+    try {
+      for (; page < startPage + MAX_PAGES_PER_REQUEST && kept.length < requestedCount; page++) {
+        const body: Record<string, unknown> = { q: queryStr, page };
+        if (typeof country === 'string' && country && country.toUpperCase() !== 'ALL') {
+          body.gl = country.toLowerCase();
+        }
+        if (serperTbs) body.tbs = serperTbs;
+
+        const serperResp = await serperFetch('/news', body);
+        if (!serperResp.ok) {
+          if (page === startPage) {
+            firstPageFailed = true;
+            const errBody = await serperResp.text();
+            console.warn(`[Search/news] ${ts} | ${ip} | serper error ${serperResp.status}: ${errBody.slice(0, 200)} — falling back to Brave`);
+            addUsageNote(res, `serper ${serperResp.status}`);
+          }
+          serperExhausted = true;
+          break;
+        }
         const data = (await serperResp.json()) as SerperNewsResponse;
-        const items: NewsResult[] = (Array.isArray(data?.news) ? data.news : [])
-          .filter((r) => r?.link)
-          .map((r) => ({
+        const raw = (Array.isArray(data?.news) ? data.news : []).filter((r) => r?.link);
+        rawSeen += raw.length;
+        if (raw.length === 0) { serperExhausted = true; break; }
+
+        for (const r of raw) {
+          const item: NewsResult = {
             title: r.title || '',
             url: r.link as string,
             description: r.snippet || '',
             source: r.source || new URL(r.link as string).hostname,
             publishedAt: normalizePublishedAt(r.date, now),
             age: typeof r.date === 'string' ? r.date : undefined,
-          }));
-        sendNews('serper_news', 'serper', items);
+          };
+          if (useSourceFilter && !isNewsSource(item.url)) { droppedSource++; continue; }
+          if (!withinWindow(item)) { droppedWindow++; continue; }
+          kept.push(item);
+        }
+        // Fewer than a full page back means Google is out of results.
+        if (raw.length < 10) { serperExhausted = true; break; }
+      }
+
+      if (!firstPageFailed) {
+        if (sortBy === 'date') sortByRecency(kept);
+        const results = kept.slice(0, requestedCount);
+        const hasMore = !serperExhausted;
+        const nextCursor = hasMore ? encodeApifyCursor(page, 'news', queryStr) : undefined;
+        const elapsed = Date.now() - t0;
+        const drops = [droppedSource ? `${droppedSource} non-news` : '', droppedWindow ? `${droppedWindow} stale` : '']
+          .filter(Boolean).join(', ');
+        console.log(
+          `[Search/news] ${ts} | ${ip} | OK ${results.length}/${rawSeen} results | pages ${startPage}-${page - 1} | ${elapsed}ms (serper_news)` +
+            (drops ? ` | dropped ${drops}` : ''),
+        );
+        if (drops) addUsageNote(res, `dropped ${drops}`);
+        res.locals.usage = { source: 'serper', results: results.length, upstream: estimateUpstream('serper', { credits: page - startPage }), detail: queryStr };
+        res.json({ ok: true, source: 'serper_news', query: queryStr, results, nextCursor, hasMore });
         return;
       }
-      const errBody = await serperResp.text();
-      console.warn(`[Search/news] ${ts} | ${ip} | serper error ${serperResp.status}: ${errBody.slice(0, 200)} — falling back to Brave`);
-      addUsageNote(res, `serper ${serperResp.status}`);
     } catch (err: any) {
       console.warn(`[Search/news] ${ts} | ${ip} | serper exception: ${err.message} — falling back to Brave`);
       addUsageNote(res, `serper: ${err.message}`);
