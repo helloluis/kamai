@@ -728,6 +728,33 @@ router.post('/image', async (req, res) => {
   }
 });
 
+// ─── Pagination cursor for the Apify (X) tier ───
+//
+// SocialCrawl platforms page via the provider's own opaque cursor (passed
+// through untouched). The Apify tier has no provider cursor, so for date-paged
+// actors (X) we mint our own: an exclusive `end` timestamp, bound to the query
+// with a hash so a cursor from one search can't be replayed against another and
+// silently return wrong-window results.
+
+function cursorHash(platform: string, q: string): string {
+  let h = 5381;
+  const s = `${platform}:${q}`;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+function encodeApifyCursor(endMs: number, platform: string, q: string): string {
+  return Buffer.from(JSON.stringify({ v: 1, e: endMs, h: cursorHash(platform, q) })).toString('base64url');
+}
+function decodeApifyCursor(token: string, platform: string, q: string): number | null {
+  try {
+    const o = JSON.parse(Buffer.from(token, 'base64url').toString('utf8'));
+    if (o?.v !== 1 || typeof o.e !== 'number' || o.h !== cursorHash(platform, q)) return null;
+    return o.e;
+  } catch {
+    return null;
+  }
+}
+
 // ─── /social — tiered social search: SocialCrawl → Apify → Brave site: ───
 
 router.post('/social', async (req, res) => {
@@ -760,7 +787,10 @@ router.post('/social', async (req, res) => {
 
   const spec = SOCIAL_PLATFORMS[platform]; // SocialCrawl tier (may not exist for this platform)
   const site = PLATFORM_SITES[platform];   // Brave site: tier (may not exist)
-  const requestedCount = Math.min(Math.max(Number(count) || 10, 1), 50);
+  // Per-page cap of 100. Depth beyond one page comes from pagination (cursor),
+  // not from an ever-larger single request — a big single Apify run risks the
+  // 120s run-sync timeout, and paging keeps each run fast.
+  const requestedCount = Math.min(Math.max(Number(count) || 10, 1), 100);
   const ts = new Date().toISOString();
   const ip = callerIp(req);
   const t0 = Date.now();
@@ -875,13 +905,27 @@ router.post('/social', async (req, res) => {
       console.warn(`[Search/social] ${ts} | ${ip} | apify ${platform} circuit open (failing, awaiting reprobe) — skipping`);
       addUsageNote(res, 'apify skipped (circuit open)');
     } else {
+      // Decode an incoming cursor (X only). A malformed or cross-query cursor
+      // must fail loudly rather than silently ignore the page position.
+      let endMs: number | undefined;
+      if (typeof cursor === 'string' && cursor && APIFY_SEARCH[platform]?.datePaged) {
+        const dec = decodeApifyCursor(cursor, platform, queryStr);
+        if (dec === null) {
+          res.status(400).json({ ok: false, error: 'Invalid or mismatched cursor — pass the nextCursor from a prior response for the same platform and query.' });
+          return;
+        }
+        endMs = dec;
+      }
       const tA = Date.now();
-      const apify = await apifyActorSearch(platform, queryStr, requestedCount, freshnessMs);
+      const apify = await apifyActorSearch(platform, queryStr, requestedCount, freshnessMs, endMs);
       recordActorOutcome(platform, apify.ok, Date.now() - tA, apify.ok ? undefined : apify.error);
       if (apify.ok) {
         const results = rank(apify.results);
         const elapsed = Date.now() - t0;
-        console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${results.length} results | ${elapsed}ms (apify)`);
+        const nextCursor = apify.hasMore && apify.nextCursorMs
+          ? encodeApifyCursor(apify.nextCursorMs, platform, queryStr)
+          : undefined;
+        console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${results.length} results | ${elapsed}ms (apify${nextCursor ? ', +page' : ''})`);
         res.locals.usage = {
           source: 'apify',
           results: results.length,
@@ -889,7 +933,7 @@ router.post('/social', async (req, res) => {
           upstream: estimateUpstream('apify', { platform, fetched: apify.fetched }),
           detail: platform,
         };
-        res.json({ ok: true, source: 'social', platform, query: queryStr, results });
+        res.json({ ok: true, source: 'social', platform, query: queryStr, results, nextCursor, hasMore: apify.hasMore ?? false });
         return;
       }
       console.warn(`[Search/social] ${ts} | ${ip} | apify ${platform} error: ${apify.error.slice(0, 200)} — falling back`);
