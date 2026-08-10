@@ -711,11 +711,12 @@ Rules and guarantees:
 - **Bound the backfill with `freshness`.** `freshness: "7d"` makes paging stop
   automatically once it reaches 7 days back. Without it, paging continues as
   far as the provider's index allows — you control depth by when you stop.
-- **Where it works:** cursor pagination is available on **x**, and on the
-  platforms served by the primary social provider (**reddit, linkedin, tiktok,
-  youtube, threads, pinterest**). **facebook** and **instagram** return a
-  single page only — their upstream has no paging, so a repeated request just
-  re-returns the same results.
+- **Where it works:** cursor pagination is available on **x**, **facebook**,
+  and the platforms served by the primary social provider (**reddit, linkedin,
+  tiktok, youtube, threads, pinterest**). **x** pages by exact timestamp;
+  **facebook** pages one calendar day at a time (up to 200 posts/day), so a
+  facebook backfill returns whole-day slices. **instagram** returns a single
+  page only — its upstream has no paging.
 - A high-volume brand produces far more than you might expect. "GCash" runs
   ~70 posts/hour on X — a genuine 7-day backfill is thousands of items across
   ~100+ pages, not one page.

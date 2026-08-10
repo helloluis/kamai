@@ -251,8 +251,8 @@ export function landingPage(): string {
   tight windows may return fewer than <code>count</code> results.
   <b>Pagination:</b> one page per request (<code>count</code> max 100); pass the response's <code>nextCursor</code> back as
   <code>cursor</code> and repeat while <code>hasMore</code> is true. Cursors are bound to their <code>platform</code>+<code>q</code>;
-  bound a backfill with <code>freshness</code>. Available on <code>x</code>, <code>reddit</code>, <code>linkedin</code>, <code>tiktok</code>,
-  <code>youtube</code>, <code>threads</code>, <code>pinterest</code>; <code>facebook</code>/<code>instagram</code> return a single page.
+  bound a backfill with <code>freshness</code>. Available on <code>x</code> (by timestamp), <code>facebook</code> (by day),
+  <code>reddit</code>, <code>linkedin</code>, <code>tiktok</code>, <code>youtube</code>, <code>threads</code>, <code>pinterest</code>; <code>instagram</code> is single-page.
   If a platform's primary backend is unavailable, queries automatically fall back through secondary providers,
   then a site-scoped web search (<code>source: "web"</code>) where the platform indexes well.</p>
 
