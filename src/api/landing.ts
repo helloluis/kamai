@@ -208,9 +208,10 @@ export function landingPage(): string {
 // → { "ok": true, "source": "serper_news",
 //     "results": [{ "title", "url", "description", "source",
 //                   "publishedAt", "age"? }] }</pre>
-  <p class="note"><code>count</code> 1–20 (default 10) · <code>freshness</code> <code>pd|pw|pm|py</code> or durations like
+  <p class="note"><code>count</code> 1–50 (default 10) · <code>freshness</code> <code>pd|pw|pm|py</code> or durations like
   <code>90min</code>, <code>2h</code>, <code>3d</code> · <code>sort</code> <code>date</code> (default) or <code>relevance</code> ·
-  <code>country</code> 2-letter code or <code>ALL</code> · <code>filterSources</code> <code>true</code> (default).
+  <code>country</code> 2-letter code or <code>ALL</code> · <code>filterSources</code> <code>true</code> (default) ·
+  <code>cursor</code>/<code>nextCursor</code> pagination for deep coverage.
   Ranked newest-first, and non-news sources — app stores, corporate FAQ and support pages, retailers,
   job boards, wikis — are dropped; set <code>filterSources: false</code> to keep them.
   Tight windows may return fewer than <code>count</code> results — that means there was no fresher coverage.</p>

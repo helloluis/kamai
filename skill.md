@@ -529,7 +529,10 @@ while this endpoint enforces the requested window exactly.
 
 **Parameters:**
 - `q` (required) — search query
-- `count` (optional) — max results, default 10, max 20
+- `count` (optional) — results per page, default 10, max 50. The server walks
+  multiple Google News pages internally to fill this after filtering.
+- `cursor` (optional) — pass the previous response's `nextCursor` to get the
+  next batch. See **Pagination** below.
 - `freshness` (optional) — presets `pd|pw|pm|py` or exact durations like
   `90min`, `2h`, `3d`, `1w`. The window is enforced server-side, so tight
   windows may return fewer than `count` results — that means there was no
@@ -541,6 +544,14 @@ while this endpoint enforces the requested window exactly.
   and job-board pages, wikis, social platforms. Set `false` to see everything
   the provider returned.
 - `country` (optional) — 2-letter country code or `ALL`
+
+**Pagination.** For more than one page of coverage, page like `/search/social`:
+if the response has `hasMore: true`, repeat the request with `cursor` set to its
+`nextCursor` (keep `q` identical — a cursor is bound to its query). `hasMore`
+stays true until Google News is exhausted for the query. Dedupe by `url`.
+Backing a query with a large `count` plus paging is how you pull deep coverage
+of a brand; note that a tight `freshness` window naturally limits how deep there
+is anything to find.
 
 **Response:**
 ```json
