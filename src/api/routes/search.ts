@@ -908,7 +908,7 @@ router.post('/social', async (req, res) => {
       // Decode an incoming cursor (X only). A malformed or cross-query cursor
       // must fail loudly rather than silently ignore the page position.
       let endMs: number | undefined;
-      if (typeof cursor === 'string' && cursor && APIFY_SEARCH[platform]?.datePaged) {
+      if (typeof cursor === 'string' && cursor && APIFY_SEARCH[platform]?.pageStrategy) {
         const dec = decodeApifyCursor(cursor, platform, queryStr);
         if (dec === null) {
           res.status(400).json({ ok: false, error: 'Invalid or mismatched cursor — pass the nextCursor from a prior response for the same platform and query.' });

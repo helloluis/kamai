@@ -63,17 +63,34 @@ interface ApifySearchSpec {
    */
   normalize: (it: any, nowMs: number) => SocialResult | null;
   /**
-   * True when the actor honors a start/end time window, enabling true backward
-   * pagination (walk older by setting each page's `end` to the previous page's
-   * oldest timestamp). Only X (apidojo) supports this — the facebook/instagram
-   * actors have a volume knob only, so a second call re-returns the same top-N.
+   * How the actor supports backward pagination, if at all:
+   *  - 'timestamp': honors a second-precision `end` bound (X/apidojo). Each page
+   *    walks older by setting `end` to the previous page's oldest timestamp.
+   *  - 'dayWindow': honors a strict startDate=endDate day slice but NOT an
+   *    open-ended end bound (facebook/scraper_one). Paging walks one calendar
+   *    day at a time.
+   * Absent → no pagination (the actor has a volume knob only, so a second call
+   * re-returns the same top-N — instagram).
    */
-  datePaged?: boolean;
+  pageStrategy?: 'timestamp' | 'dayWindow';
 }
+
+const DAY_MS = 86_400_000;
+/** How far a dayWindow backfill walks when no freshness floor is given. */
+const DAYWINDOW_BACKSTOP_DAYS = 90;
 
 /** apidojo wants `YYYY-MM-DD_HH:MM:SS_UTC`. Second precision is honored (verified). */
 function apidojoDate(ms: number): string {
   return new Date(ms).toISOString().slice(0, 19).replace('T', '_') + '_UTC';
+}
+
+/** `YYYY-MM-DD` for a timestamp (UTC). */
+function dayOnly(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+/** Midnight-UTC ms of the day containing `ms`. */
+function startOfDayMs(ms: number): number {
+  return Date.parse(dayOnly(ms) + 'T00:00:00.000Z');
 }
 
 /** Coerce actor count fields that arrive as strings (and sometimes "None"). */
@@ -128,27 +145,44 @@ export function parseFreshness(v: unknown): number | null {
 }
 
 export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
-  // Facebook public post keyword search (guest-token, no cookies).
-  // Normalizer tolerates both memo23 (camelCase) and alien_force (snake_case)
-  // outputs so the actor can be swapped without code changes.
+  // Facebook public post keyword search — scraper_one~facebook-posts-search.
+  //
+  // Switched from memo23~facebook-search-scraper, which has ONLY maxItems (no
+  // dates, no cursor) and so re-returns the same top-N on any repeat — it
+  // cannot backfill. scraper_one honors a STRICT startDate=endDate day slice
+  // (verified 18/18 inside one day), but NOT an open-ended end bound (endDate
+  // alone leaks months of results), so its paging is a day-at-a-time walk
+  // rather than X's smooth timestamp cursor. ~$0.0025/item, 99.9% success.
+  //
+  // Page 1 (no cursor) is a plain newest-N search, freshness-bounded when given,
+  // so a non-paginating "latest FB posts" caller is unchanged. Pages 2+ are
+  // single-day slices; makeInput's `endIso` is a YYYY-MM-DD day for this actor.
   facebook: {
-    defaultActor: 'memo23~facebook-search-scraper',
+    defaultActor: 'scraper_one~facebook-posts-search',
     actorEnv: 'APIFY_FB_SEARCH_ACTOR',
-    makeInput: (q, n) => ({ searchType: 'posts', searchQueries: [q], maxItems: n }),
+    pageStrategy: 'dayWindow',
+    makeInput: (q, n, freshnessMs, endIso) => {
+      const base: Record<string, unknown> = { query: q, searchType: 'latest', resultsCount: Math.min(n, 200) };
+      if (endIso) return { ...base, startDate: endIso, endDate: endIso }; // page 2+: one day
+      if (freshnessMs) return { ...base, startDate: dayOnly(Date.now() - freshnessMs), endDate: dayOnly(Date.now()) };
+      return base; // page 1, no window: newest N
+    },
     normalize: (it: any, nowMs: number) => {
-      const url = it?.postUrl || it?.post_url || it?.url || null;
-      if (!url) return null;
+      const id = it?.postId || null;
+      const url = it?.url || null;
+      if (!url && !id) return null;
       return {
-        id: it.postId || it.post_id || null,
+        id,
         url,
-        text: it.text || null,
-        author: it.authorName || it.author_username || it.name || null,
-        publishedAt: normalizePublishedAt(it.creationTime ?? it.create_time, nowMs),
-        likes: it.likeCount ?? it.like_count ?? null,
-        comments: it.commentCount ?? it.comment_count ?? null,
-        shares: it.shareCount ?? it.share_count ?? null,
-        views: it.viewCount ?? it.view_count ?? null,
-        meta: it.isVerified != null ? { isVerified: it.isVerified } : undefined,
+        text: it.postText || null,
+        author: it.author?.name || null,
+        // timestamp is epoch MILLISECONDS; normalizePublishedAt handles the unit.
+        publishedAt: normalizePublishedAt(it.timestamp, nowMs),
+        likes: toNum(it.reactionsCount),
+        comments: toNum(it.commentsCount),
+        shares: toNum(it.sharesCount),
+        views: null,
+        meta: it.reactions ? { reactions: it.reactions } : undefined,
       };
     },
   },
@@ -217,7 +251,7 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
   x: {
     defaultActor: 'apidojo~tweet-scraper',
     actorEnv: 'APIFY_X_SEARCH_ACTOR',
-    datePaged: true,
+    pageStrategy: 'timestamp',
     makeInput: (q, n, freshnessMs, endIso) => ({
       searchTerms: [q],
       sort: 'Latest',
@@ -298,7 +332,7 @@ export async function apifyActorSearch(
   queryStr: string,
   count: number,
   freshnessMs?: number,
-  /** Exclusive upper time bound in ms — page backward before this (datePaged actors only). */
+  /** Upper time bound in ms — page backward before this (paged actors only). */
   endMs?: number,
 ): Promise<
   | { ok: true; results: SocialResult[]; fetched: number; nextCursorMs?: number; hasMore?: boolean }
@@ -310,10 +344,15 @@ export async function apifyActorSearch(
   // A date-paged actor filters by start/end natively (accurate), so the 3x
   // over-fetch that compensates for the post-filter isn't needed. Others still
   // over-fetch to survive the freshness post-filter dropping items.
-  const fetchCount = spec.datePaged
+  const fetchCount = spec.pageStrategy
     ? count
     : freshnessMs ? Math.min(50, count * 3) : count;
-  const endIso = spec.datePaged && endMs ? apidojoDate(endMs) : undefined;
+  // The `end` bound format differs by strategy: second-precision datetime for
+  // the timestamp walk, a bare day for the day-window walk.
+  const endIso = endMs === undefined ? undefined
+    : spec.pageStrategy === 'timestamp' ? apidojoDate(endMs)
+    : spec.pageStrategy === 'dayWindow' ? dayOnly(endMs)
+    : undefined;
   try {
     const resp = await fetch(
       `${APIFY_BASE}/acts/${actor}/run-sync-get-dataset-items?token=${APIFY_API_TOKEN}&timeout=100`,
@@ -346,18 +385,30 @@ export async function apifyActorSearch(
         return !Number.isNaN(t) && t >= cutoff;
       });
     }
-    // For a date-paged actor, the next page walks older: its cursor is the
-    // OLDEST timestamp in THIS page (computed before the count-slice, over every
-    // result the actor returned). hasMore is true when the actor filled the page
-    // — a short page means the window is exhausted. `end` is exclusive, so the
-    // oldest tweet won't reappear; callers still dedupe by id across pages as a
-    // guard against boundary-second overlap.
+    // Compute the next cursor per paging strategy.
     let nextCursorMs: number | undefined;
     let hasMore: boolean | undefined;
-    if (spec.datePaged) {
-      const times = results.map((r) => (r.publishedAt ? Date.parse(r.publishedAt) : NaN)).filter((t) => !Number.isNaN(t));
+    const times = results.map((r) => (r.publishedAt ? Date.parse(r.publishedAt) : NaN)).filter((t) => !Number.isNaN(t));
+    if (spec.pageStrategy === 'timestamp') {
+      // Walk older: next `end` is the oldest timestamp in this page (exclusive,
+      // so the oldest post won't reappear). A short page means the window is dry.
       nextCursorMs = times.length ? Math.min(...times) : undefined;
       hasMore = items.length >= fetchCount && nextCursorMs !== undefined;
+    } else if (spec.pageStrategy === 'dayWindow') {
+      // Walk one calendar day at a time, down to the freshness floor (or a
+      // backstop). Page 1 (no endMs) hands the next page the OLDEST day it saw —
+      // page 2 then re-fetches that whole day (deduped by id) so nothing between
+      // page 1's cut and the day boundary is skipped. Page 2+ steps one day back.
+      const floorMs = startOfDayMs(freshnessMs ? Date.now() - freshnessMs : Date.now() - DAYWINDOW_BACKSTOP_DAYS * DAY_MS);
+      const nextDayMs = endMs === undefined
+        ? (times.length ? startOfDayMs(Math.min(...times)) : undefined)
+        : startOfDayMs(endMs) - DAY_MS;
+      if (nextDayMs !== undefined && nextDayMs >= floorMs) {
+        nextCursorMs = nextDayMs;
+        hasMore = true;
+      } else {
+        hasMore = false;
+      }
     }
     // `fetched` feeds the cost estimate, so it must be what Apify BILLS — the
     // number of dataset items the actor produced — not what survived our

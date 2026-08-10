@@ -72,7 +72,7 @@ const stmtInsert = db.prepare(
  * understated actual spend by 1.8x (LinkedIn) to 15x (TikTok).
  */
 const APIFY_COST: Record<string, { start: number; perResult: number }> = {
-  facebook: { start: 0.005, perResult: 0.0019 },
+  facebook: { start: 0.0025, perResult: 0.0025 }, // scraper_one~facebook-posts-search
   instagram: { start: 0.001, perResult: 0.0027 },
   tiktok: { start: 0.006, perResult: 0.0037 },
   linkedin: { start: 0.00005, perResult: 0.002 },
