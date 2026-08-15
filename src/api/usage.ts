@@ -148,7 +148,7 @@ function normalizeEndpoint(path: string): string {
     .replace(/^\/api\/v1/, '')
     .replace(/\/+$/, '')
     .replace(
-      /\/(screenshot|brochure)\/[0-9a-f]{8}-[0-9a-f-]{20,}(\/\w+)?$/i,
+      /\/(screenshot|brochure|image)\/[0-9a-f]{8}-[0-9a-f-]{20,}(\/\w+)?$/i,
       (_m, kind, tail) => `/${kind}/:id${tail || ''}`,
     ) || '/';
 }
@@ -180,7 +180,12 @@ export function usageMiddleware(req: Request, res: Response, next: NextFunction)
   // Capture the endpoint NOW — routers rewrite req.url during dispatch, so by
   // the time 'finish' fires the mount prefix is gone (/search/social → /social).
   const endpoint = normalizeEndpoint(req.path);
-  res.on('finish', () => {
+  // setImmediate: this global middleware registers its 'finish' listener
+  // BEFORE the route-level creditPayment does, but creditPayment's listener is
+  // the one that settles res.locals.chargedUsd (max(floor, 2x upstream)).
+  // Without the deferral, rows log the pre-settlement floor prediction and the
+  // /adm Settled/Receivable columns drift from what was actually debited.
+  res.on('finish', () => setImmediate(() => {
     try {
       const u = (res.locals.usage ?? {}) as UsageDetail;
       const ok2xx = res.statusCode >= 200 && res.statusCode < 300;
@@ -205,7 +210,7 @@ export function usageMiddleware(req: Request, res: Response, next: NextFunction)
     } catch {
       // Analytics must never break a request.
     }
-  });
+  }));
   next();
 }
 
