@@ -413,6 +413,53 @@ admRouter.get('/data.json', (_req, res) => {
   res.json({ ok: true, ...queries() });
 });
 
+/**
+ * Daily receivables (billable - charged) per sister app per vendor, for the
+ * dashboard chart. Filtering by app/vendor happens client-side; the date range
+ * bounds the query. Apps = named sister apps (current env config) plus any
+ * app that historically appears in the log under a sister name.
+ */
+admRouter.get('/receivables.json', (req, res) => {
+  const dayRe = /^\d{4}-\d{2}-\d{2}$/;
+  const today = new Date().toISOString().slice(0, 10);
+  const defaultFrom = new Date(Date.now() - 29 * 86_400_000).toISOString().slice(0, 10);
+  const to = dayRe.test(String(req.query.to)) ? String(req.query.to) : today;
+  const from = dayRe.test(String(req.query.from)) ? String(req.query.from) : defaultFrom;
+
+  const sisterNames = [...new Set(SISTER_KEY_NAMES.values())];
+  if (sisterNames.length === 0) {
+    res.json({ ok: true, from, to, rows: [], apps: [], vendors: [] });
+    return;
+  }
+  const placeholders = sisterNames.map(() => '?').join(',');
+  const raw = db.prepare(
+    `SELECT date(created_at) AS day, app, COALESCE(source, 'self') AS source,
+            COALESCE(SUM(billable_usd), 0) AS billable,
+            COALESCE(SUM(charged_usd), 0) AS charged
+     FROM request_log
+     WHERE app IN (${placeholders}) AND date(created_at) >= ? AND date(created_at) <= ?
+     GROUP BY day, app, source ORDER BY day ASC`,
+  ).all(...sisterNames, from, to) as Array<{ day: string; app: string; source: string; billable: number; charged: number }>;
+
+  const rows = raw.map((r) => ({
+    day: r.day,
+    app: r.app,
+    vendor: PROVIDER_VENDOR[r.source] ?? r.source,
+    receivable: +Math.max(0, r.billable - r.charged).toFixed(4),
+  })).filter((r) => r.receivable > 0);
+
+  res.json({
+    ok: true,
+    from,
+    to,
+    rows,
+    // Full app list (not just in-range) so chip order and colors stay stable
+    // across date-range changes — color follows the entity, never the filter.
+    apps: [...new Set([...sisterNames, ...rows.map((r) => r.app)])].sort(),
+    vendors: [...new Set(rows.map((r) => r.vendor))].sort(),
+  });
+});
+
 admRouter.get('/', (_req, res) => {
   const { summary, breakdown, recent, totals, sisters, providers } = queries();
   // Receivable, not "net". Sister apps are never debited, so charged is ~$0
@@ -463,6 +510,18 @@ admRouter.get('/', (_req, res) => {
   .card.sister { min-width: 150px; }
   .card .k2 { color: #c9d1d9; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 2px; }
   .note { color: #7d8590; font-size: 12px; margin-top: 32px; }
+  .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .filters input[type=date] { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 12px; color-scheme: dark; }
+  .btn { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  .btn:hover { background: #30363d; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid #30363d; border-radius: 999px; font-size: 12px; cursor: pointer; user-select: none; color: #c9d1d9; margin: 2px; }
+  .chip .sw { width: 10px; height: 10px; border-radius: 3px; }
+  .chip.off { opacity: .35; }
+  .chartcard { margin-top: 12px; padding: 16px 18px; }
+  .tip { position: fixed; pointer-events: none; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; font-size: 12px; color: #e6edf3; display: none; z-index: 10; box-shadow: 0 4px 16px rgba(0,0,0,.5); white-space: nowrap; }
+  .tip b { font-variant-numeric: tabular-nums; }
+  .rvempty { color: #7d8590; font-size: 13px; padding: 40px 0; text-align: center; }
+  details.rvtable { margin-top: 10px; } details.rvtable summary { cursor: pointer; color: #7d8590; font-size: 12px; }
 </style></head><body>
 <h1>kamai admin</h1>
 
@@ -475,6 +534,202 @@ ${sisters.map((s) => `
     <div class="k">${s.requests.toLocaleString()} request${s.requests === 1 ? '' : 's'} · ${usd(s.upstreamUsd)} cost</div>
   </div>`).join('') || '<div class="card"><div class="k">No sister apps configured</div></div>'}
 </div>
+
+<h2>Receivables by day</h2>
+<div class="card chartcard">
+  <div class="filters">
+    <input type="date" id="rvfrom"> <span class="dim">to</span> <input type="date" id="rvto">
+    <button class="btn" data-days="7">7d</button>
+    <button class="btn" data-days="30">30d</button>
+    <button class="btn" data-days="90">90d</button>
+    <span class="dim" style="margin-left:10px">Apps:</span> <span id="rvapps"></span>
+    <span class="dim" style="margin-left:10px">Providers:</span> <span id="rvvendors"></span>
+  </div>
+  <div id="rvchart"><div class="rvempty">Loading…</div></div>
+  <details class="rvtable"><summary>Table view</summary><div id="rvtabledata"></div></details>
+</div>
+<div class="tip" id="rvtip"></div>
+<script>
+(function () {
+  // Categorical palette — validated for CVD separation and >=3:1 contrast on
+  // this card surface (#161b22). Slots assigned to apps alphabetically and
+  // never re-assigned on filter; a 9th+ app folds into neutral "other".
+  var PAL = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181', '#008300', '#9085e9', '#e66767'];
+  var OTHER = '#768390';
+  var DATA = { rows: [], apps: [], vendors: [], from: '', to: '' };
+  var offApps = {}, offVendors = {};
+  var elChart = document.getElementById('rvchart');
+  var elTip = document.getElementById('rvtip');
+  var elFrom = document.getElementById('rvfrom');
+  var elTo = document.getElementById('rvto');
+
+  function colorOf(app) {
+    var i = DATA.apps.indexOf(app);
+    return i >= 0 && i < PAL.length ? PAL[i] : OTHER;
+  }
+  function usd(v) { return '$' + (v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(4)); }
+  function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+
+  function fetchData(from, to) {
+    var q = [];
+    if (from) q.push('from=' + from);
+    if (to) q.push('to=' + to);
+    fetch('/adm/receivables.json' + (q.length ? '?' + q.join('&') : ''))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        DATA = d;
+        elFrom.value = d.from; elTo.value = d.to;
+        renderChips();
+        draw();
+      })
+      .catch(function () {
+        elChart.innerHTML = '<div class="rvempty">Failed to load receivables.</div>';
+      });
+  }
+
+  function chip(label, color, isOff, onClick) {
+    var c = document.createElement('span');
+    c.className = 'chip' + (isOff ? ' off' : '');
+    if (color) c.innerHTML = '<span class="sw" style="background:' + color + '"></span>' + esc(label);
+    else c.textContent = label;
+    c.onclick = onClick;
+    return c;
+  }
+
+  function renderChips() {
+    var apps = document.getElementById('rvapps');
+    apps.innerHTML = '';
+    DATA.apps.forEach(function (a) {
+      apps.appendChild(chip(a, colorOf(a), offApps[a], function () {
+        offApps[a] = !offApps[a]; renderChips(); draw();
+      }));
+    });
+    var vends = document.getElementById('rvvendors');
+    vends.innerHTML = '';
+    DATA.vendors.forEach(function (v) {
+      vends.appendChild(chip(v, null, offVendors[v], function () {
+        offVendors[v] = !offVendors[v]; renderChips(); draw();
+      }));
+    });
+  }
+
+  function dayList(from, to) {
+    var out = [], d = new Date(from + 'T00:00:00Z'), end = new Date(to + 'T00:00:00Z');
+    while (d <= end && out.length < 400) {
+      out.push(d.toISOString().slice(0, 10));
+      d.setUTCDate(d.getUTCDate() + 1);
+    }
+    return out;
+  }
+
+  function topRect(x, y, w, h, r) {
+    r = Math.min(r, h / 2, w / 2);
+    return 'M' + x + ' ' + (y + h) + ' L' + x + ' ' + (y + r) +
+      ' Q' + x + ' ' + y + ' ' + (x + r) + ' ' + y +
+      ' L' + (x + w - r) + ' ' + y +
+      ' Q' + (x + w) + ' ' + y + ' ' + (x + w) + ' ' + (y + r) +
+      ' L' + (x + w) + ' ' + (y + h) + ' Z';
+  }
+
+  function draw() {
+    var rows = DATA.rows.filter(function (r) { return !offApps[r.app] && !offVendors[r.vendor]; });
+    var days = dayList(DATA.from, DATA.to);
+    var apps = DATA.apps.filter(function (a) { return !offApps[a]; });
+    var byDay = {};
+    days.forEach(function (d) { byDay[d] = {}; });
+    rows.forEach(function (r) {
+      if (!byDay[r.day]) return;
+      byDay[r.day][r.app] = (byDay[r.day][r.app] || 0) + r.receivable;
+    });
+    var maxTotal = 0;
+    days.forEach(function (d) {
+      var t = 0; apps.forEach(function (a) { t += byDay[d][a] || 0; });
+      if (t > maxTotal) maxTotal = t;
+    });
+    if (maxTotal <= 0) {
+      elChart.innerHTML = '<div class="rvempty">No receivables in this range.</div>';
+      document.getElementById('rvtabledata').innerHTML = '';
+      return;
+    }
+    var pow = Math.pow(10, Math.floor(Math.log(maxTotal) / Math.LN10));
+    var m = maxTotal / pow;
+    var nice = (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * pow;
+
+    var W = 960, H = 300, L = 58, R = 8, T = 14, B = 26;
+    var pw = W - L - R, ph = H - T - B;
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;display:block" role="img" aria-label="Daily receivables, stacked by sister app">';
+    // recessive grid + y labels
+    for (var g = 0; g <= 4; g++) {
+      var gy = T + ph - (ph * g / 4);
+      svg += '<line x1="' + L + '" y1="' + gy + '" x2="' + (W - R) + '" y2="' + gy + '" stroke="#21262d" stroke-width="1"/>';
+      svg += '<text x="' + (L - 8) + '" y="' + (gy + 4) + '" text-anchor="end" font-size="11" fill="#7d8590" style="font-variant-numeric:tabular-nums">$' + (nice * g / 4).toFixed(2) + '</text>';
+    }
+    var slot = pw / days.length;
+    var bw = Math.min(slot * 0.66, 44);
+    var tickStep = Math.ceil(days.length / 12);
+    days.forEach(function (d, i) {
+      var x = L + slot * i + (slot - bw) / 2;
+      var yCursor = T + ph;
+      var stack = [];
+      apps.forEach(function (a) { var v = byDay[d][a] || 0; if (v > 0) stack.push([a, v]); });
+      stack.forEach(function (pair, si) {
+        var h = pair[1] / nice * ph;
+        var y = yCursor - h;
+        var isTop = si === stack.length - 1;
+        // 2px surface gap between stacked segments; keep at least 1px of mark
+        var gh = Math.max(h - (si < stack.length - 1 ? 2 : 0), 1);
+        var attrs = ' class="seg" data-app="' + esc(pair[0]) + '" data-day="' + d + '" data-v="' + pair[1].toFixed(4) + '" fill="' + colorOf(pair[0]) + '"';
+        if (isTop) svg += '<path d="' + topRect(x, y, bw, gh, 4) + '"' + attrs + '/>';
+        else svg += '<rect x="' + x + '" y="' + y + '" width="' + bw + '" height="' + gh + '"' + attrs + '/>';
+        yCursor = y;
+      });
+      if (i % tickStep === 0) {
+        svg += '<text x="' + (L + slot * i + slot / 2) + '" y="' + (H - 8) + '" text-anchor="middle" font-size="11" fill="#7d8590">' + d.slice(5) + '</text>';
+      }
+    });
+    svg += '</svg>';
+    elChart.innerHTML = svg;
+
+    elChart.querySelectorAll('.seg').forEach(function (el) {
+      el.addEventListener('mousemove', function (e) {
+        var total = 0;
+        apps.forEach(function (a) { total += byDay[el.dataset.day][a] || 0; });
+        var share = total > 0 ? Math.round(parseFloat(el.dataset.v) / total * 100) : 0;
+        elTip.innerHTML = esc(el.dataset.app) + ' &middot; ' + el.dataset.day +
+          '<br><b>' + usd(parseFloat(el.dataset.v)) + '</b> <span class="dim">(' + share + '% of day)</span>';
+        elTip.style.display = 'block';
+        elTip.style.left = (e.clientX + 14) + 'px';
+        elTip.style.top = (e.clientY - 10) + 'px';
+      });
+      el.addEventListener('mouseleave', function () { elTip.style.display = 'none'; });
+    });
+
+    // table view — same data, day x app
+    var tbl = '<table><tr><th>Day</th>';
+    apps.forEach(function (a) { tbl += '<th class="num">' + esc(a) + '</th>'; });
+    tbl += '<th class="num">Total</th></tr>';
+    days.forEach(function (d) {
+      var t = 0;
+      var cells = apps.map(function (a) { var v = byDay[d][a] || 0; t += v; return '<td class="num">' + (v > 0 ? usd(v) : '') + '</td>'; }).join('');
+      if (t > 0) tbl += '<tr><td class="dim">' + d + '</td>' + cells + '<td class="num acc">' + usd(t) + '</td></tr>';
+    });
+    tbl += '</table>';
+    document.getElementById('rvtabledata').innerHTML = tbl;
+  }
+
+  elFrom.addEventListener('change', function () { fetchData(elFrom.value, elTo.value); });
+  elTo.addEventListener('change', function () { fetchData(elFrom.value, elTo.value); });
+  document.querySelectorAll('.btn[data-days]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var days = parseInt(b.dataset.days, 10);
+      var to = new Date().toISOString().slice(0, 10);
+      var from = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+      fetchData(from, to);
+    });
+  });
+  fetchData();
+})();
+</script>
 
 <h2>Upstream cost by vendor — all time</h2>
 <div class="totals">
