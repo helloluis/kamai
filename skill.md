@@ -156,6 +156,26 @@ POST /api/v1/account/generate-key  → generate/regenerate an API key (requires 
 4. **Use `selector`** to narrow extraction — reduces noise from headers/footers
 5. **Chain actions** — you can type, click, wait, and extract in a single request
 
+## Image Generation
+
+`POST /api/v1/image/generate` — generate an image through kamai's provider accounts (you never manage provider keys). One provider/model per request; run your own failover chain if you need one. Billed cost-plus (100% markup on upstream); **the settled price is returned in the response** as `priceUsd`.
+
+Request:
+
+```json
+{
+  "provider": "openai | ideogram | dashscope",
+  "model": "gpt-image-2 | ideogram-v4 | qwen-image-3.0-pro | ...",
+  "prompt": "full art-direction brief",
+  "size": "1536x1024 (openai) or 1664*928 (dashscope)",
+  "quality": "low|medium|high (openai only)",
+  "resolution": "2560x1440 | 3072x1024 | ... (ideogram only)",
+  "rendering_speed": "FLASH|TURBO|BALANCED|DEFAULT|QUALITY (ideogram only)"
+}
+```
+
+Response: `{ ok, imageId, imageUrl, provider, model, sizeBytes, upstreamUsd, priceUsd, pricing: "cost-plus:100%", expiresAt, elapsedMs }`. Fetch bytes from `GET {imageUrl}` (public, no auth, expires in 24h — copy the image to your own storage). Generation failures are 502 and never billed.
+
 ## Error Handling
 
 ```json

@@ -82,6 +82,13 @@ export const PRICE_SEARCH = 0.003;
  */
 export const PRICE_SCREENSHOT = 0.015;
 
+/**
+ * Image generation floor. Every generation has real upstream cost
+ * ($0.03-$0.19/image), so the 2x markup nearly always exceeds this — the
+ * floor exists only to catch a provider mispricing to ~zero.
+ */
+export const PRICE_IMAGE = 0.02;
+
 /** Get the price for a request based on whether it has actions */
 export function getRequestPrice(hasActions: boolean, isSister: boolean): number {
   const base = hasActions ? PRICE_ACTIONS : PRICE_BROWSE;

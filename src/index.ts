@@ -18,6 +18,8 @@ import memoriesRouter, { closeMemoriesDb } from './api/routes/memories.js';
 import brochureRouter, { brochurePublic } from './api/routes/brochure.js';
 import searchRouter from './api/routes/search.js';
 import screenshotRouter, { screenshotPublic } from './api/routes/screenshot.js';
+import genimageRouter, { genimagePublic } from './api/routes/genimage.js';
+import { cleanupExpiredGenImages, closeGenImageDb } from './genimage/storage.js';
 import spendRouter, { closeSpendDb } from './api/routes/spend.js';
 import { cleanupExpiredScreenshots, closeScreenshotDb } from './screenshot/storage.js';
 import { searchOpsRouter, startActorHealthScheduler } from './api/apifySearch.js';
@@ -27,7 +29,7 @@ import { shutdown } from './browser/index.js';
 import { landingPage } from './api/landing.js';
 import { closeCreditsDb } from './payment/credits.js';
 import { cleanupExpired, closeBrochureDb } from './brochure/index.js';
-import { PRICE_BROCHURE, PRICE_SEARCH, PRICE_SCREENSHOT } from './payment/config.js';
+import { PRICE_BROCHURE, PRICE_SEARCH, PRICE_SCREENSHOT, PRICE_IMAGE } from './payment/config.js';
 import { getMasterAddress } from './payment/wallet.js';
 import { PAYMENT_RECIPIENT } from './payment/config.js';
 
@@ -76,6 +78,11 @@ app.use('/api/v1/search', rateLimit, creditPayment(PRICE_SEARCH), searchRouter);
 // Public router mounts FIRST — unmatched requests fall through to the paid one.
 app.use('/api/v1/screenshot', rateLimit, screenshotPublic);
 app.use('/api/v1/screenshot', rateLimit, creditPayment(PRICE_SCREENSHOT), screenshotRouter);
+// Image generation: :id/file bytes are public (callers fetch and re-host the
+// image themselves); generation is paid. Public router mounts FIRST, same
+// pattern as screenshot.
+app.use('/api/v1/image', rateLimit, genimagePublic);
+app.use('/api/v1/image', rateLimit, creditPayment(PRICE_IMAGE), genimageRouter);
 app.use('/api/v1/session', rateLimit, sessionRouter);
 
 // Legacy routes — backward compatibility with minai/beanie browse-service
@@ -119,9 +126,11 @@ const CLEANUP_INTERVAL = 60 * 60 * 1000;
 const cleanupTimer = setInterval(() => {
   cleanupExpired();
   cleanupExpiredScreenshots();
+  cleanupExpiredGenImages();
 }, CLEANUP_INTERVAL);
 cleanupExpired(); // run once at startup
 cleanupExpiredScreenshots();
+cleanupExpiredGenImages();
 
 // Price any request rows logged before cost-plus pricing existed, so tabs and
 // the Receivable bucket reflect all traffic rather than only new traffic.
@@ -146,6 +155,7 @@ const graceful = async () => {
   closeMemoriesDb();
   closeBrochureDb();
   closeScreenshotDb();
+  closeGenImageDb();
   closeActorHealthDb();
   closeSpendDb();
   closeUsageDb();

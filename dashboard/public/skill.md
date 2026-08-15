@@ -35,6 +35,7 @@ API keys are **optional**. A wallet address works on its own. Keys are useful wh
 |-------------|------|
 | Page load (no actions) | $0.009 |
 | Page load with actions | $0.013 |
+| Brochure PDF generation | $0.050 |
 
 - **First request each day is free** (per account)
 - **Minimum deposit:** $0.10 USDC on Celo
@@ -155,6 +156,26 @@ POST /api/v1/account/generate-key  → generate/regenerate an API key (requires 
 4. **Use `selector`** to narrow extraction — reduces noise from headers/footers
 5. **Chain actions** — you can type, click, wait, and extract in a single request
 
+## Image Generation
+
+`POST /api/v1/image/generate` — generate an image through kamai's provider accounts (you never manage provider keys). One provider/model per request; run your own failover chain if you need one. Billed cost-plus (100% markup on upstream); **the settled price is returned in the response** as `priceUsd`.
+
+Request:
+
+```json
+{
+  "provider": "openai | ideogram | dashscope",
+  "model": "gpt-image-2 | ideogram-v4 | qwen-image-3.0-pro | ...",
+  "prompt": "full art-direction brief",
+  "size": "1536x1024 (openai) or 1664*928 (dashscope)",
+  "quality": "low|medium|high (openai only)",
+  "resolution": "2560x1440 | 3072x1024 | ... (ideogram only)",
+  "rendering_speed": "FLASH|TURBO|BALANCED|DEFAULT|QUALITY (ideogram only)"
+}
+```
+
+Response: `{ ok, imageId, imageUrl, provider, model, sizeBytes, upstreamUsd, priceUsd, pricing: "cost-plus:100%", expiresAt, elapsedMs }`. Fetch bytes from `GET {imageUrl}` (public, no auth, expires in 24h — copy the image to your own storage). Generation failures are 502 and never billed.
+
 ## Error Handling
 
 ```json
@@ -169,6 +190,597 @@ Common errors:
 - `Navigation timeout` — page took too long to load
 - `Insufficient credits` — deposit USDC to continue
 - `type requires "selector" and "text"` — missing action parameters
+
+---
+
+## PDF Brochure Generation
+
+Generate beautiful multi-page corporate PDFs from structured content. Supports iterative refinement — update an existing brochure without regenerating from scratch.
+
+### Pricing
+
+| Request type | Cost |
+|-------------|------|
+| Generate or update a brochure | $0.05 |
+| Download a brochure | Free |
+
+Sister apps (minai, registered partners) use this for free.
+
+### GET /api/v1/brochure/templates
+
+List available templates with their required and optional fields.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "templates": [
+    {
+      "id": "corporate-overview",
+      "name": "Corporate Overview",
+      "description": "Cover page + content sections + contact back page",
+      "requiredFields": ["title", "sections"],
+      "optionalFields": ["subtitle", "brandColor", "coverImage", "logo", "contactInfo", "footer", "charts"]
+    }
+  ]
+}
+```
+
+### POST /api/v1/brochure/generate
+
+Create a new brochure PDF.
+
+**Request:**
+```json
+{
+  "template": "corporate-overview",
+  "content": {
+    "title": "Acme Corp — Company Overview",
+    "subtitle": "Innovation Since 1999",
+    "brandColor": "#1a3b5c",
+    "coverImage": "https://example.com/hero.jpg",
+    "logo": "https://example.com/logo.png",
+    "sections": [
+      {
+        "heading": "Our Mission",
+        "body": "We build things that matter...",
+        "image": "https://example.com/team.jpg",
+        "imageCaption": "The Acme team at HQ"
+      },
+      {
+        "heading": "Key Metrics",
+        "body": "Our growth over the past year..."
+      }
+    ],
+    "charts": [
+      {
+        "type": "bar",
+        "title": "Revenue by Quarter",
+        "labels": ["Q1", "Q2", "Q3", "Q4"],
+        "values": [120, 180, 210, 350]
+      }
+    ],
+    "contactInfo": {
+      "companyName": "Acme Corp",
+      "email": "info@acme.com",
+      "phone": "+1-555-0100",
+      "website": "https://acme.com",
+      "address": "123 Innovation Ave, San Francisco, CA"
+    },
+    "footer": "© 2026 Acme Corp. All rights reserved."
+  },
+  "options": {
+    "pageSize": "A4",
+    "expiresIn": "30d"
+  }
+}
+```
+
+**Content fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `title` | string (required) | Main title / company name |
+| `subtitle` | string | Tagline or subtitle |
+| `brandColor` | string | Hex color (default `#1a3b5c`) |
+| `accentColor` | string | Secondary hex color (auto-derived if omitted) |
+| `coverImage` | string | URL or base64 data URI for cover background |
+| `logo` | string | URL or base64 for company logo |
+| `sections` | array | Content sections (corporate-overview template) |
+| `sections[].heading` | string | Section heading |
+| `sections[].body` | string | Section body text |
+| `sections[].image` | string | URL or base64 for section image |
+| `sections[].imageCaption` | string | Caption below the image |
+| `products` | array | Product items (product-showcase template) |
+| `products[].name` | string | Product name |
+| `products[].description` | string | Product description |
+| `products[].image` | string | Product image URL or base64 |
+| `products[].price` | string | Display price (e.g. "$99.99") |
+| `products[].specs` | object | Key-value spec pairs |
+| `event` | object | Event details (event-invitation template) |
+| `event.name` | string | Event name |
+| `event.date` | string | Event date |
+| `event.time` | string | Event time |
+| `event.location` | string | Venue |
+| `event.description` | string | Event description |
+| `event.speakers` | array | Speaker bios with name, title, image, bio |
+| `event.rsvpUrl` | string | Registration URL |
+| `event.rsvpEmail` | string | RSVP email address |
+| `charts` | array | Bar charts to embed in the brochure |
+| `charts[].type` | string | `"bar"` (more types coming) |
+| `charts[].title` | string | Chart title |
+| `charts[].labels` | string[] | Category labels |
+| `charts[].values` | number[] | Data values |
+| `charts[].colors` | string[] | Custom bar colors (optional) |
+| `contactInfo` | object | Contact details for back page |
+| `footer` | string | Footer text on content pages |
+
+**Options:**
+
+| Option | Values | Default |
+|--------|--------|---------|
+| `pageSize` | `"A4"`, `"LETTER"` | `"A4"` |
+| `expiresIn` | `"7d"`, `"14d"`, `"30d"` | `"30d"` |
+
+**Response:**
+```json
+{
+  "ok": true,
+  "brochureId": "a1b2c3d4-...",
+  "downloadUrl": "/api/v1/brochure/a1b2c3d4-.../download",
+  "pageCount": 4,
+  "sizeBytes": 245000,
+  "expiresAt": "2026-05-07T12:00:00.000Z",
+  "template": "corporate-overview"
+}
+```
+
+### PATCH /api/v1/brochure/:id
+
+Update an existing brochure. Send only the fields you want to change — they are merged into the original content and re-rendered.
+
+**Request:**
+```json
+{
+  "content": {
+    "subtitle": "Updated Tagline",
+    "sections": [
+      { "heading": "Our NEW Mission", "body": "Updated copy..." },
+      { "heading": "Key Metrics", "body": "Even better numbers..." }
+    ]
+  }
+}
+```
+
+**Response:** Same shape as generate.
+
+> **Note:** Arrays (`sections`, `products`, `charts`) are replaced entirely, not merged element-by-element. Send the full array with your changes.
+
+### GET /api/v1/brochure/:id/download
+
+Download the generated PDF. No authentication or credit charge required.
+
+Returns `Content-Type: application/pdf`.
+
+### Templates
+
+| ID | Best for | Required fields |
+|----|----------|----------------|
+| `corporate-overview` | Company decks, proposals, annual summaries | `title`, `sections` |
+| `product-showcase` | Product catalogs, menus, portfolios | `title`, `products` |
+| `event-invitation` | Conferences, workshops, launches | `title`, `event` |
+
+## Screenshots
+
+### POST /api/v1/screenshot
+
+Capture the relevant part of a URL as a JPEG or PNG. Works on ordinary web
+pages **and on social posts**, which normally sit behind a login wall.
+
+**Request:**
+```json
+{
+  "url": "https://x.com/jack/status/20",
+  "mode": "auto",
+  "format": "jpeg",
+  "width": 1280,
+  "maxHeight": 4000
+}
+```
+
+**Parameters:**
+- `url` (required) — the page or post to capture
+- `mode` (optional) — `auto` (default), `relevant`, `viewport`, `full`, `element`
+  - `auto` / `relevant` — social posts render via the platform's embed; ordinary
+    pages are cropped to the main content region
+  - `viewport` — above the fold only
+  - `full` — whole page, capped at `maxHeight`
+  - `element` — requires `selector`
+- `selector` (required for `mode: "element"`) — CSS selector
+- `format` (optional) — `jpeg` (default) or `png`
+- `quality` (optional) — JPEG quality 30–100, default 82
+- `width` (optional) — viewport width 320–2000, default 1280 (ignored for social embeds, which use the platform's own width)
+- `maxHeight` (optional) — height cap in CSS px, 200–8000, default 4000
+- `scale` (optional) — device pixel ratio 1–3, default 2 (retina)
+- `encoding` (optional) — `url` (default) or `base64`
+- `expiresInDays` (optional) — 1–30, default 7
+
+**Response:**
+```json
+{
+  "ok": true,
+  "screenshotId": "94880d12-ee97-42d3-be38-3837d4b71110",
+  "imageUrl": "/api/v1/screenshot/94880d12-.../image",
+  "strategy": "embed:x",
+  "sourceUrl": "https://x.com/jack/status/20",
+  "title": "jack on X",
+  "format": "jpeg",
+  "width": 550,
+  "height": 225,
+  "sizeBytes": 37888,
+  "expiresAt": "2026-08-14T12:00:00.000Z",
+  "elapsedMs": 5064
+}
+```
+
+`GET /api/v1/screenshot/:id/image` returns the bytes and needs **no auth**, so
+the URL can be handed straight to a vision model. `GET /api/v1/screenshot/:id`
+returns metadata; `GET /api/v1/screenshot/list` lists your recent captures.
+Both are free.
+
+Prefer `imageUrl` over `encoding: "base64"`. A 1MB PNG pasted into a transcript
+as base64 text costs ~380k tokens; the same image passed as an image is ~1.2k
+visual tokens. Inline base64 is refused above 1.5MB.
+
+### Social coverage
+
+`strategy` tells you which route produced the image — always check it.
+
+| Platform | Strategy | Notes |
+|----------|----------|-------|
+| X / Twitter | `embed:x` | Full post card with engagement counts |
+| Instagram | `embed:instagram` | Posts and reels, with caption |
+| LinkedIn | `embed:linkedin` | Public posts (needs an activity/share id in the URL) |
+| Facebook | `embed:facebook` | Public posts |
+| Threads | `embed:threads` | Public posts |
+| Bluesky | `embed:bluesky` | Handles resolved to DIDs automatically |
+| TikTok | `embed:tiktok` | Card renders; the video poster frame often does not |
+| Reddit | `apify:reddit-card` | **Rendered card, not a pixel capture** — see below |
+| Anything else | `page:*` | `page:lcp`, `page:lcp-container`, `page:landmark`, `page:viewport` |
+
+**Reddit is different.** Reddit blocks this server's IP on every surface, so
+the post is fetched through a third-party scraper and kamai renders a capture
+card from the real data (title, subreddit, author, score, comment count, date,
+body, first image). It is a faithful record of the post's content, not a
+photograph of reddit.com — the `apify:reddit-card` strategy says so explicitly.
+It also takes **~110 seconds**, so set a generous client timeout.
+
+**Storage limits.** `GET /api/v1/screenshot/usage` reports how much space you
+and the server are using. Past a limit, captures are refused with **HTTP 507**
+and a `code` of `caller_quota`, `store_full` or `disk_full` — lower
+`expiresInDays` or wait for captures to expire.
+
+**Failures are loud.** If a social embed returns an error page ("Post not
+found", a rate-limit notice) the request fails with that reason rather than
+returning a blank image. There is deliberately no fallback to rendering the raw
+social URL, because that just captures the login wall and would look like a
+successful capture. A `truncated: true` field means the page was taller than
+`maxHeight` and the capture was cut.
+
+## Web Search
+
+kamai proxies web, news, image, and social search so callers can run
+high-volume search without managing their own provider subscriptions or rate
+limits. Multiple backends with automatic failover — no keys to manage.
+
+**Timestamps and ranking (`/search/news` and `/search/social`).** Every result
+carries a `publishedAt` that is either an ISO 8601 UTC timestamp or `null` —
+never a relative string like `"2 days ago"` — regardless of which backend
+answered, so results can be sorted and thresholded directly. Both endpoints
+rank newest-first by default. Items with no resolvable timestamp sort last,
+and are dropped entirely when a `freshness` window is set, since they can't be
+shown to fall inside it.
+
+Endpoints:
+
+### POST /api/v1/search/web
+
+LLM-optimised web search — returns extracted page snippets plus source URLs.
+
+**Request:**
+```json
+{
+  "q": "Tim Cook age",
+  "count": 5,
+  "country": "US"
+}
+```
+
+**Parameters:**
+- `q` (required) — search query
+- `count` (optional) — number of results, default 5, max 20
+- `country` (optional) — 2-letter country code or `ALL`
+- `maxTokens` (optional) — token budget for context API (default 4096)
+- `freshness` (optional) — presets `pd|pw|pm|py` or durations like `2h`, `3d`.
+  **Approximate here**: the window is widened to the nearest preset the web
+  index supports and is not enforced on results. For recency-critical queries
+  use `/api/v1/search/news`, which enforces the exact window.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "source": "serper",
+  "query": "Tim Cook age",
+  "results": [
+    {
+      "title": "Tim Cook - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Tim_Cook",
+      "description": "Born November 1, 1960 in Mobile, Alabama...",
+      "content": "Tim Cook is an American business executive...",
+      "age": "2 days ago"
+    }
+  ]
+}
+```
+
+`source` identifies which backend answered — failover between providers is
+automatic. When `content` is present it contains extracted page text;
+otherwise results carry only the `description` snippet.
+
+### POST /api/v1/search/news
+
+News search against news indexes rather than the general web — use this for
+"what happened", breaking coverage, and anything where recency matters.
+Prefer it over `/search/web` whenever the query is time-sensitive: the web
+index ranks evergreen pages above reporting and treats freshness as a hint,
+while this endpoint enforces the requested window exactly.
+
+**Request:**
+```json
+{
+  "q": "openai funding round",
+  "count": 10,
+  "freshness": "6h",
+  "sort": "date",
+  "country": "US"
+}
+```
+
+**Parameters:**
+- `q` (required) — search query
+- `count` (optional) — results per page, default 10, max 50. The server walks
+  multiple Google News pages internally to fill this after filtering.
+- `cursor` (optional) — pass the previous response's `nextCursor` to get the
+  next batch. See **Pagination** below.
+- `freshness` (optional) — presets `pd|pw|pm|py` or exact durations like
+  `90min`, `2h`, `3d`, `1w`. The window is enforced server-side, so tight
+  windows may return fewer than `count` results — that means there was no
+  fresher coverage, not that the search failed.
+- `sort` (optional) — `date` (default, newest first) or `relevance` to fall
+  back to the provider's own ranking
+- `filterSources` (optional) — default `true`. Drops results that aren't news
+  reporting: app-store listings, corporate FAQ/support/docs pages, retailer
+  and job-board pages, wikis, social platforms. Set `false` to see everything
+  the provider returned.
+- `country` (optional) — 2-letter country code or `ALL`
+
+**Pagination.** For more than one page of coverage, page like `/search/social`:
+if the response has `hasMore: true`, repeat the request with `cursor` set to its
+`nextCursor` (keep `q` identical — a cursor is bound to its query). `hasMore`
+stays true until Google News is exhausted for the query. Dedupe by `url`.
+Backing a query with a large `count` plus paging is how you pull deep coverage
+of a brand; note that a tight `freshness` window naturally limits how deep there
+is anything to find.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "source": "serper_news",
+  "query": "openai funding round",
+  "results": [
+    {
+      "title": "OpenAI closes funding round",
+      "url": "https://example.com/article",
+      "description": "The company confirmed...",
+      "source": "Reuters",
+      "publishedAt": "2026-08-07T09:12:00.000Z",
+      "age": "2 hours ago"
+    }
+  ],
+  "nextCursor": "eyJ2Ijox…",
+  "hasMore": true
+}
+```
+
+**Getting maximum coverage.** For a thorough sweep of a topic or brand (not just
+the top few headlines), use both levers together:
+
+1. Set a large `count` (30–50) so each page is filled past the filters.
+2. While `hasMore` is `true`, repeat the request with `cursor: <nextCursor>`
+   (same `q`), accumulating and deduping results by `url`, until `hasMore` is
+   `false`.
+
+Two things to expect. Google News's index has **finite depth per query** — a
+busy brand yields well into the hundreds across pages, a niche one far fewer, so
+`hasMore: false` is the real end of coverage, not a bug. And **recency trades
+against depth**: a tight `freshness` window (say `2h`) caps how much exists to
+find, so if you want both volume and recent reporting, a moderate window
+(`pd`/`pw`) with paging is the sweet spot. Each internal page is one upstream
+credit, so a deep sweep costs proportionally more than a single lookup.
+
+Results are ranked newest-first by default. Relevance ranking surfaces
+evergreen explainers and hub pages that match the keywords but aren't recent
+reporting, which is rarely what a news query wants — pass `sort: "relevance"`
+if you do want the provider's ordering.
+
+`source` identifies which backend answered: `serper_news`, `brave_news`, or
+`web_news` (a thinner last-resort bucket used only when both news indexes are
+unavailable).
+
+An empty `results` array with `"ok": true` means the filters removed
+everything, not that the search failed — usually the window was too tight.
+Widen `freshness`, or set `filterSources: false` to check whether the source
+filter was responsible.
+
+### POST /api/v1/search/image
+
+Image search — returns direct image URLs, thumbnails, and source pages.
+
+**Request:**
+```json
+{
+  "q": "Eiffel Tower at night",
+  "count": 10,
+  "safesearch": "strict"
+}
+```
+
+**Parameters:**
+- `q` (required) — search query
+- `count` (optional) — max results, default 5, max 50
+- `safesearch` (optional) — `strict` (default) or `off`
+
+**Response:**
+```json
+{
+  "ok": true,
+  "query": "Eiffel Tower at night",
+  "results": [
+    {
+      "title": "Eiffel Tower glowing at night",
+      "url": "https://example.com/article",
+      "imageUrl": "https://...full.jpg",
+      "thumbnailUrl": "https://...thumb.jpg",
+      "width": 1200,
+      "height": 800,
+      "source": "example.com"
+    }
+  ]
+}
+```
+
+### POST /api/v1/search/social
+
+Social platform search — brand mentions, competitor tracking, community
+research. One request shape for every platform.
+
+**Request:**
+```json
+{
+  "platform": "reddit",
+  "q": "your brand",
+  "sort": "new",
+  "timeframe": "week",
+  "count": 10
+}
+```
+
+**Parameters:**
+- `platform` (required) — `x` (aliases: `twitter`, `x.com`), `reddit`,
+  `linkedin`, `tiktok`, `youtube`, `threads`, `pinterest`, `instagram`
+  (public reels keyword search — runs live, expect 15–60s), `facebook`
+  (public post search — runs live, so expect 20–60s response times; public
+  content only), or `facebook-events`
+- `q` (required) — search query
+- `sort` (optional) — reddit: `relevance|new|top|comment_count`; linkedin:
+  `relevance|date`. Omit it to get kamai's newest-first ranking; passing it
+  hands ordering back to the platform (so `top` really is top-by-engagement).
+  X always searches chronologically (required for date-windowed paging).
+- `timeframe` (optional) — reddit: `day|week|month|year|all`; linkedin: `day|week|month`
+- `freshness` (optional) — limit results by age: presets `pd|pw|pm|py` or
+  exact durations like `90min`, `2h`, `3d`, `1w`. The exact window is always
+  enforced server-side; tight windows may return fewer than `count` results.
+  When paginating, `freshness` is the **floor** of the backfill — paging stops
+  once it walks past the window.
+- `count` (optional) — results per page, default 10, max 100
+- `cursor` (optional) — pass the previous response's `nextCursor` to fetch the
+  next page. See **Pagination & backfill** below.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "source": "social",
+  "platform": "reddit",
+  "query": "your brand",
+  "results": [
+    {
+      "id": "1vcrpje",
+      "url": "https://www.reddit.com/r/Bitcoin/comments/...",
+      "text": "post text...",
+      "author": "username",
+      "publishedAt": "2026-08-01T12:00:00.000Z",
+      "likes": 42,
+      "comments": 12,
+      "shares": null,
+      "views": null,
+      "meta": { "subreddit": "Bitcoin" }
+    }
+  ],
+  "nextCursor": "...",
+  "hasMore": true
+}
+```
+
+If a platform's primary backend is unavailable, queries automatically fall
+back through secondary providers, then a site-scoped web search
+(`source: "web"`) where the platform indexes well — those results contain
+only `url` + `text` snippet.
+
+### Pagination & backfill
+
+A single request returns one page (up to `count`, max 100). To retrieve more —
+e.g. a multi-day brand backfill — page with the cursor:
+
+1. Make the request without a `cursor`.
+2. If the response has `hasMore: true`, send the same request again with
+   `cursor` set to the response's `nextCursor`.
+3. Repeat until `hasMore` is `false` (or `nextCursor` is absent).
+
+```json
+// page 1
+{ "platform": "x", "q": "GCash", "count": 100 }
+// → { ..., "nextCursor": "eyJ2Ijox…", "hasMore": true }
+
+// page 2
+{ "platform": "x", "q": "GCash", "count": 100, "cursor": "eyJ2Ijox…" }
+// → { ..., "nextCursor": "eyJ2Ijoy…", "hasMore": true }
+```
+
+Rules and guarantees:
+
+- **Keep the query identical across pages.** The cursor is bound to the
+  `platform` + `q` it was issued for; replaying it against a different search
+  returns `400 Invalid or mismatched cursor`.
+- **Dedupe by `id`.** Pages walk strictly backward in time and do not overlap
+  in normal use, but you should still dedupe on `id` as a guard against posts
+  sharing a boundary timestamp.
+- **Bound the backfill with `freshness`.** `freshness: "7d"` makes paging stop
+  automatically once it reaches 7 days back. Without it, paging continues as
+  far as the provider's index allows — you control depth by when you stop.
+- **Where it works:** cursor pagination is available on **x**, **facebook**,
+  and the platforms served by the primary social provider (**reddit, linkedin,
+  tiktok, youtube, threads, pinterest**). **x** pages by exact timestamp;
+  **facebook** pages one calendar day at a time (up to 200 posts/day), so a
+  facebook backfill returns whole-day slices. **instagram** returns a single
+  page only — its upstream has no paging.
+- A high-volume brand produces far more than you might expect. "GCash" runs
+  ~70 posts/hour on X — a genuine 7-day backfill is thousands of items across
+  ~100+ pages, not one page.
+
+### Cost
+
+| Endpoint | Cost |
+|----------|------|
+| `/search/web` | $0.003 |
+| `/search/news` | $0.003 |
+| `/search/image` | $0.003 |
+| `/screenshot` | $0.015 |
+| `/search/social` | $0.003 |
+
+Sister apps get the standard 50% discount.
 
 ## Rate Limits
 

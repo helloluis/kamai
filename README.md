@@ -22,6 +22,8 @@ Public URL: `https://kamai.minai.work` — LLM-facing integration spec: [`skill.
 | `POST /api/v1/search/social` | credits | Social search: x/twitter, reddit, linkedin, tiktok, instagram, youtube, threads, pinterest, facebook posts + events — freshness windows + cursor pagination (x + SocialCrawl platforms) |
 | `POST /api/v1/screenshot` | credits | Screenshot the relevant part of a URL — social posts via official embeds |
 | `GET /api/v1/screenshot/:id/image` | — | Fetch the captured image (public, expiring) |
+| `POST /api/v1/image/generate` | credits | Generate an image via OpenAI / Ideogram / DashScope (cost-plus, price in response) |
+| `GET /api/v1/image/:id/file` | — | Fetch a generated image (public, expiring) |
 | `POST /api/v1/brochure/generate` | credits | Generate a PDF brochure from structured content |
 | `GET /api/v1/brochure/:id/download` | — | Download a generated PDF |
 | `GET /api/v1/brochure/templates` | — | List brochure templates |

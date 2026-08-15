@@ -32,6 +32,9 @@ export const PRICE_FLOORS = {
   search: 0.003,
   screenshot: 0.015,
   brochure: 0.05,
+  // Image generation always has real upstream ($0.03-$0.19/image), so the 2x
+  // markup dominates; the floor only catches a provider mispricing to ~zero.
+  image: 0.02,
 } as const;
 
 /** Settle the price of one request. `upstreamUsd` is the measured cost. */
@@ -58,6 +61,9 @@ export function floorForEndpoint(endpoint: string): number {
   if (e.startsWith('/screenshot')) return 0;
   if (e.startsWith('/brochure/templates') || /\/brochure\/[^/]+\/download/.test(e)) return 0;
   if (e.startsWith('/brochure')) return PRICE_FLOORS.brochure;
+  // Only generation is billable; :id/file reads are free.
+  if (e === '/image/generate') return PRICE_FLOORS.image;
+  if (e.startsWith('/image')) return 0;
   return 0;
 }
 
@@ -97,6 +103,9 @@ export function publishedRates(
     social('facebook', 0.0606),
     social('tiktok', 0.1526),
     social('instagram', 0.2323),
+    { endpoint: '/api/v1/image/generate', variant: 'gpt-image-2 medium', upstreamUsd: 0.041, priceUsd: priceFor(PRICE_FLOORS.image, 0.041) },
+    { endpoint: '/api/v1/image/generate', variant: 'ideogram-v4 DEFAULT', upstreamUsd: 0.06, priceUsd: priceFor(PRICE_FLOORS.image, 0.06) },
+    { endpoint: '/api/v1/image/generate', variant: 'qwen-image-3.0-pro', upstreamUsd: 0.04, priceUsd: priceFor(PRICE_FLOORS.image, 0.04), note: 'priced per model — upstream varies by provider/quality' },
     { endpoint: '/api/v1/screenshot', upstreamUsd: 0.0002, priceUsd: PRICE_FLOORS.screenshot, note: 'floor — embed/page render is self-hosted' },
     { endpoint: '/api/v1/screenshot', variant: 'reddit', upstreamUsd: 0.0238, priceUsd: priceFor(PRICE_FLOORS.screenshot, 0.0238), note: 'via Apify' },
     { endpoint: '/api/v1/brochure/generate', upstreamUsd: 0.0005, priceUsd: PRICE_FLOORS.brochure, note: 'floor' },

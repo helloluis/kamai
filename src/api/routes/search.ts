@@ -33,6 +33,7 @@ import {
   FRESHNESS_MS,
 } from '../apifySearch.js';
 import { estimateUpstream } from '../usage.js';
+import { priceFor, PRICE_FLOORS } from '../../payment/pricing.js';
 import { normalizePublishedAt, sortByRecency, isNewsSource } from '../searchNormalize.js';
 
 const router = Router();
@@ -46,6 +47,8 @@ const BRAVE_BASE = 'https://api.search.brave.com/res/v1';
 
 interface SerperWebResponse {
   organic?: Array<{ title?: string; link?: string; snippet?: string; date?: string }>;
+  answerBox?: { answer?: string; snippet?: string; title?: string };
+  knowledgeGraph?: { title?: string; type?: string; description?: string; attributes?: Record<string, string> };
 }
 
 interface SerperNewsResponse {
@@ -329,8 +332,19 @@ router.post('/web', async (req, res) => {
           }));
         const elapsed = Date.now() - t0;
         console.log(`[Search/web] ${ts} | ${ip} | OK ${results.length} results | ${elapsed}ms (serper)`);
-        res.locals.usage = { source: 'serper', results: Math.min(results.length, requestedCount), upstream: estimateUpstream('serper'), detail: queryStr };
-        res.json({ ok: true, source: 'serper', query: queryStr, results: results.slice(0, requestedCount) });
+        const upstream = estimateUpstream('serper');
+        res.locals.usage = { source: 'serper', results: Math.min(results.length, requestedCount), upstream, detail: queryStr };
+        res.json({
+          ok: true,
+          source: 'serper',
+          query: queryStr,
+          results: results.slice(0, requestedCount),
+          // Serper extras — direct answers and entity cards are exactly what
+          // LLM callers want from a search; previously dropped on the floor.
+          ...(data.answerBox ? { answerBox: data.answerBox } : {}),
+          ...(data.knowledgeGraph ? { knowledgeGraph: data.knowledgeGraph } : {}),
+          priceUsd: priceFor(PRICE_FLOORS.search, upstream),
+        });
         return;
       }
       const errBody = await serperResp.text();
@@ -383,7 +397,7 @@ router.post('/web', async (req, res) => {
       const elapsed = Date.now() - t0;
       console.log(`[Search/web] ${ts} | ${ip} | OK ${results.length} results | ${elapsed}ms (llm_context)`);
       res.locals.usage = { source: 'brave', results: Math.min(results.length, requestedCount), upstream: estimateUpstream('brave'), detail: queryStr };
-      res.json({ ok: true, source: 'llm_context', query: queryStr, results: results.slice(0, requestedCount) });
+      res.json({ ok: true, source: 'llm_context', query: queryStr, results: results.slice(0, requestedCount), priceUsd: priceFor(PRICE_FLOORS.search, estimateUpstream('brave')) });
       return;
     }
 
@@ -402,7 +416,7 @@ router.post('/web', async (req, res) => {
   if (legacy.ok) {
     console.log(`[Search/web] ${ts} | ${ip} | OK ${legacy.results.length} results | ${elapsed}ms (web fallback)`);
     res.locals.usage = { source: 'brave', results: Math.min(legacy.results.length, requestedCount), upstream: estimateUpstream('brave'), detail: queryStr };
-    res.json({ ok: true, source: 'web', query: queryStr, results: legacy.results.slice(0, requestedCount) });
+    res.json({ ok: true, source: 'web', query: queryStr, results: legacy.results.slice(0, requestedCount), priceUsd: priceFor(PRICE_FLOORS.search, estimateUpstream('brave')) });
   } else {
     console.error(`[Search/web] ${ts} | ${ip} | FAIL ${legacy.error.slice(0, 80)} | ${elapsed}ms`);
     res.status(legacy.status).json({ ok: false, error: legacy.error });
