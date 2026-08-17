@@ -43,6 +43,18 @@ interface Check {
 
 const RANK: Record<HealthState, number> = { ok: 0, warn: 1, down: 2 };
 
+/**
+ * Flatten an upstream error into one sentence.
+ *
+ * Apify returns multi-line JSON blobs, and `detail` is rendered straight into
+ * a phone alert — an embedded newline breaks the message layout and buries the
+ * useful part. Collapse whitespace, then truncate.
+ */
+function oneLine(text: string, max = 120): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
 /** Constant-time compare; hashing first sidesteps the equal-length requirement. */
 function secretsMatch(a: string, b: string): boolean {
   return timingSafeEqual(
@@ -97,10 +109,12 @@ function actorChecks(): Check[] {
     if (!a.ok) {
       state = 'down';
       const fails = a.consecutiveFailures ?? 0;
-      detail =
+      detail = oneLine(
         `${a.actor} is failing` +
-        (fails ? ` (${fails} consecutive)` : '') +
-        (a.error ? ` — ${a.error.slice(0, 140)}` : '');
+          (fails ? ` (${fails} consecutive)` : '') +
+          (a.error ? ` — ${a.error}` : ''),
+        160,
+      );
     } else if (staleHours > 48) {
       // A healthy actor that has not been probed in two days is not evidence
       // of health; it is evidence the prober stopped.
