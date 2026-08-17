@@ -233,6 +233,13 @@ router.post('/', async (req, res) => {
         detail: 'reddit-failed',
       };
     }
+    // An unembeddable URL shape is the caller's input, not our failure — 422
+    // keeps it out of the server-error rate that alerting watches.
+    if (err?.unsupported) {
+      addUsageNote(res, 'unsupported url shape');
+      res.status(422).json({ ok: false, error: msg.slice(0, 300), code: 'unsupported_url', elapsedMs: elapsed });
+      return;
+    }
     const timedOut = /timeout|timed out|deadline/i.test(msg);
     res.status(timedOut ? 504 : 502).json({ ok: false, error: msg.slice(0, 300), elapsedMs: elapsed });
   }

@@ -18,6 +18,19 @@
  * 'load' plus a fixed settle instead.
  */
 
+/**
+ * The URL is a shape the platform will never embed (e.g. a Facebook group
+ * post). This is a property of the caller's input, not a service failure, so
+ * the route answers 422 rather than 502 — it must not read as an outage.
+ */
+export class UnsupportedEmbedError extends Error {
+  readonly unsupported = true;
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedEmbedError';
+  }
+}
+
 export interface EmbedSpec {
   platform: string;
   /** Navigate here (most platforms). */
@@ -120,14 +133,29 @@ export async function resolveEmbed(rawUrl: string): Promise<EmbedSpec | null> {
 
   // ── Facebook — the post plugin takes the permalink verbatim. ──
   if (host === 'facebook.com' || host === 'fb.watch') {
+    // Group posts are NOT embeddable. Facebook's post plugin answers every
+    // /groups/<id>/permalink/<id> URL with "This Facebook post is no longer
+    // available" regardless of the group's privacy — verified against live
+    // group permalinks. Attempting anyway cost ~3s of browser time per request
+    // and produced 93% of all screenshot failures (39 of 42 in 24h), reported
+    // as a generic embed error that looked like an outage. Reject up front with
+    // a reason the caller can act on.
+    if (/\/groups\//.test(path)) {
+      throw new UnsupportedEmbedError(
+        'Facebook group posts cannot be captured — Facebook does not allow group content to be embedded, regardless of group privacy. Only Page/profile posts, photos and videos are supported.',
+      );
+    }
     if (!/\/(posts|permalink|photo|videos|watch|story\.php|share)/.test(path) && !u.search.includes('v=')) {
       return null;
     }
     return {
       platform: 'facebook',
+      // locale pinned: without it Facebook picks one from the server's IP and
+      // renders the post (and its error text) in that language — captures from
+      // this box came back in Chinese.
       url: `https://www.facebook.com/plugins/post.php?href=${encodeURIComponent(
         u.toString(),
-      )}&show_text=true&width=500`,
+      )}&show_text=true&width=500&locale=en_US`,
       selectors: ['._1dwg', '[data-testid]', 'body > div'],
       settleMs: 2500,
       waitUntil: 'load',
