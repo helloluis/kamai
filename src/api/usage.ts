@@ -73,7 +73,7 @@ const stmtInsert = db.prepare(
  */
 const APIFY_COST: Record<string, { start: number; perResult: number }> = {
   facebook: { start: 0.0025, perResult: 0.0025 }, // scraper_one~facebook-posts-search
-  instagram: { start: 0.001, perResult: 0.0027 },
+  instagram: { start: 0, perResult: 0.0019 }, // apify~instagram-hashtag-scraper
   tiktok: { start: 0.006, perResult: 0.0037 },
   linkedin: { start: 0.00005, perResult: 0.002 },
   // danek~twitter-scraper: no start fee, $0.00024 per dataset item.

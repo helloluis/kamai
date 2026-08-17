@@ -187,26 +187,40 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
     },
   },
 
-  // Instagram keyword search — official Apify actor, "popular" type is the only
-  // no-login keyword path; returns public reels (IG exposes no photo keyword
-  // search without a session). likesCount === -1 means the author hid likes.
+  // Instagram keyword search — apify~instagram-hashtag-scraper.
+  //
+  // Replaces apify~instagram-search-scraper, whose runs began FAILING on
+  // Apify's side on 2026-08-14 (run status FAILED, not a bad-input 400) and
+  // never recovered, leaving Instagram on the degraded Brave fallback for days.
+  // This one does 476K runs/30d at 99.6% success. `keywordSearch: true` makes
+  // it treat the term as a keyword rather than a literal tag, which matches how
+  // callers use /search/social. $0.0019/result.
+  //
+  // Note: likesCount === -1 means the author hid likes — coerced to null.
   instagram: {
-    defaultActor: 'apify~instagram-search-scraper',
+    defaultActor: 'apify~instagram-hashtag-scraper',
     actorEnv: 'APIFY_IG_SEARCH_ACTOR',
-    makeInput: (q, n) => ({ search: q, searchType: 'popular', searchLimit: n }),
+    makeInput: (q, n) => ({
+      // Strip a leading '#' so both "gcash" and "#gcash" behave the same.
+      hashtags: [q.replace(/^#+/, '')],
+      keywordSearch: true,
+      resultsType: 'posts',
+      resultsLimit: n,
+    }),
     normalize: (it: any, nowMs: number) => {
-      const url = it?.url || null;
+      const url = it?.url || (it?.shortCode ? `https://www.instagram.com/p/${it.shortCode}/` : null);
       if (!url) return null;
+      const likes = toNum(it.likesCount);
       return {
         id: it.shortCode || it.id || null,
         url,
         text: it.caption || null,
         author: it.ownerUsername || null,
         publishedAt: normalizePublishedAt(it.timestamp, nowMs),
-        likes: typeof it.likesCount === 'number' && it.likesCount >= 0 ? it.likesCount : null,
-        comments: it.commentsCount ?? null,
+        likes: likes !== null && likes >= 0 ? likes : null,
+        comments: toNum(it.commentsCount),
         shares: null, // Instagram never exposes share counts
-        views: it.videoViewCount ?? it.videoPlayCount ?? null,
+        views: toNum(it.videoViewCount ?? it.videoPlayCount),
       };
     },
   },
