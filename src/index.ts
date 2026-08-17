@@ -14,6 +14,7 @@ import sessionRouter from './api/routes/session.js';
 import depositRouter from './api/routes/deposit.js';
 import accountRouter from './api/routes/account.js';
 import healthRouter from './api/routes/health.js';
+import monitorHealthRouter from './api/routes/monitorHealth.js';
 import memoriesRouter, { closeMemoriesDb } from './api/routes/memories.js';
 import brochureRouter, { brochurePublic } from './api/routes/brochure.js';
 import searchRouter from './api/routes/search.js';
@@ -45,6 +46,12 @@ app.use(usageMiddleware); // request analytics — logs API calls to usage.db
 
 // Public routes
 app.use('/health', healthRouter);
+
+// Machine-readable health for the monitor (o.b11.dev/integrate). Separate from
+// /health above, which only answers "is the process up" — it reported ok:true
+// throughout the 22 hours the Instagram actor was dead. Token-gated, because
+// the body carries actor names, error strings and spend figures.
+app.use('/api/health', monitorHealthRouter);
 
 // Admin dashboard — Basic auth (ADMIN_USER/ADMIN_PASS), per-app cost analytics
 app.use('/adm', rateLimit, admRouter);
