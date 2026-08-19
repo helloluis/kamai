@@ -176,7 +176,12 @@ async function braveWebSearch(
   try {
     const webParams = new URLSearchParams({
       q: queryStr,
-      count: String(count),
+      // Brave's web API hard-caps count at 20 and 422s above it. Callers can now
+      // ask /social and /news for up to 50/100, and that count flows through to
+      // this shared fallback — so clamp here rather than at each call site. A
+      // single unclamped request used to 422 the fallback for BOTH instagram and
+      // reddit (they share this path), collapsing the whole chain.
+      count: String(Math.min(Math.max(count, 1), 20)),
       text_decorations: 'false',
       search_lang: 'en',
     });
