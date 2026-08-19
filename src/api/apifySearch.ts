@@ -48,10 +48,34 @@ export interface SocialResult {
 
 // ─── Actor registry ───
 
+/**
+ * One interchangeable actor wrapper: the actor id plus the input/output
+ * adapters that make it look like every other provider to the rest of kamai.
+ *
+ * Keeping a ranked stable of these per platform is what makes a provider swap
+ * a config change instead of a code change — when an actor rots (they all do
+ * eventually), the next candidate is already wired.
+ */
+interface ApifyCandidate {
+  actor: string;
+  makeInput: (q: string, n: number, freshnessMs?: number, endIso?: string) => Record<string, unknown>;
+  normalize: (it: any, nowMs: number) => SocialResult | null;
+  pageStrategy?: 'timestamp' | 'dayWindow';
+  /** Why this one sits where it does in the ranking. */
+  note?: string;
+}
+
 interface ApifySearchSpec {
   /** Default actor in username~actorname form; overridable via actorEnv. */
   defaultActor: string;
   actorEnv: string;
+  /**
+   * Ranked alternates, tried in order when the primary errors OR returns
+   * nothing. Same empty-fallthrough principle as the provider chain in
+   * search.ts: an actor that answers with zero results has not done its job.
+   * Skipped while paginating, since a cursor belongs to the actor that issued it.
+   */
+  fallbacks?: ApifyCandidate[];
   /**
    * Build the actor input. `endIso` is set only for date-paged actors on
    * page 2+ — it's the exclusive upper time bound (results strictly before it).
@@ -144,6 +168,59 @@ export function parseFreshness(v: unknown): number | null {
   return parseInt(m[1], 10) * FRESHNESS_UNITS[m[2]];
 }
 
+/** kamai freshness window -> apidojo tiktok `dateRange` bucket (smallest that contains it). */
+function tiktokDateRange(ms?: number): string {
+  if (!ms) return 'DEFAULT';
+  if (ms <= DAY_MS) return 'YESTERDAY';
+  if (ms <= 7 * DAY_MS) return 'THIS_WEEK';
+  if (ms <= 31 * DAY_MS) return 'THIS_MONTH';
+  if (ms <= 92 * DAY_MS) return 'LAST_THREE_MONTHS';
+  if (ms <= 184 * DAY_MS) return 'LAST_SIX_MONTHS';
+  return 'ALL_TIME';
+}
+/** Same mapping in scrapeforge's vocabulary. */
+function tiktokDatePosted(ms?: number): string {
+  if (!ms) return 'all-time';
+  if (ms <= DAY_MS) return 'yesterday';
+  if (ms <= 7 * DAY_MS) return 'this-week';
+  if (ms <= 31 * DAY_MS) return 'this-month';
+  if (ms <= 92 * DAY_MS) return 'last-3-months';
+  return 'last-6-months';
+}
+/** clockworks-shaped output (clockworks + scrapeforge share this schema). */
+function clockworksNormalize(it: any, nowMs: number): SocialResult | null {
+  const url = it?.webVideoUrl || null;
+  if (!url || it.errorCode) return null;
+  return {
+    id: it.id || null,
+    url,
+    text: it.text || null,
+    author: it.authorMeta?.name || it.authorMeta?.nickName || null,
+    publishedAt: normalizePublishedAt(it.createTimeISO ?? it.createTime, nowMs),
+    likes: toNum(it.diggCount),
+    comments: toNum(it.commentCount),
+    shares: toNum(it.shareCount),
+    views: toNum(it.playCount),
+  };
+}
+
+/** kamai freshness -> streamers `dateFilter` bucket. */
+function youtubeDateFilter(ms: number): string {
+  if (ms <= 3_600_000) return 'hour';
+  if (ms <= DAY_MS) return 'today';
+  if (ms <= 7 * DAY_MS) return 'week';
+  if (ms <= 31 * DAY_MS) return 'month';
+  return 'year';
+}
+/** Same, in apidojo's single-letter vocabulary. */
+function youtubeUploadDate(ms: number): string {
+  if (ms <= 3_600_000) return 'l';
+  if (ms <= DAY_MS) return 't';
+  if (ms <= 7 * DAY_MS) return 'w';
+  if (ms <= 31 * DAY_MS) return 'm';
+  return 'y';
+}
+
 export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
   // Facebook public post keyword search — scraper_one~facebook-posts-search.
   //
@@ -198,29 +275,61 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
   //
   // Note: likesCount === -1 means the author hid likes — coerced to null.
   instagram: {
-    defaultActor: 'apify~instagram-hashtag-scraper',
+    // Instagram's *Recent* hashtag tab, not a post-filter over a popular feed —
+    // live-proved 10/10 items on the same day, versus the previous actor's
+    // Dec-2025..Aug-2026 spread that made freshness=pd return nothing.
+    // Caveat: small actor (8.7k runs, ~60% success), so the previous actor stays
+    // wired as a fallback and SocialCrawl/Brave still sit behind it.
+    defaultActor: 'scraping_solutions~instagram-hashtag-scraper-pro-no-cookies',
     actorEnv: 'APIFY_IG_SEARCH_ACTOR',
+    fallbacks: [
+      {
+        actor: 'apify~instagram-hashtag-scraper',
+        note: 'previous primary; popularity-ranked, no recency lever',
+        makeInput: (q, n) => ({
+          hashtags: [q.replace(/^#+/, '')],
+          keywordSearch: true,
+          resultsType: 'posts',
+          resultsLimit: n,
+        }),
+        normalize: (it: any, nowMs: number) => {
+          const url = it?.url || (it?.shortCode ? `https://www.instagram.com/p/${it.shortCode}/` : null);
+          if (!url) return null;
+          const likes = toNum(it.likesCount);
+          return {
+            id: it.shortCode || it.id || null,
+            url,
+            text: it.caption || null,
+            author: it.ownerUsername || null,
+            publishedAt: normalizePublishedAt(it.timestamp, nowMs),
+            likes: likes !== null && likes >= 0 ? likes : null,
+            comments: toNum(it.commentsCount),
+            shares: null,
+            views: toNum(it.videoViewCount ?? it.videoPlayCount),
+          };
+        },
+      },
+    ],
     makeInput: (q, n) => ({
-      // Strip a leading '#' so both "gcash" and "#gcash" behave the same.
       hashtags: [q.replace(/^#+/, '')],
-      keywordSearch: true,
-      resultsType: 'posts',
+      feed_type: 'recent', // the recency lever
       resultsLimit: n,
     }),
     normalize: (it: any, nowMs: number) => {
-      const url = it?.url || (it?.shortCode ? `https://www.instagram.com/p/${it.shortCode}/` : null);
+      const code = it?.code || null;
+      const url = it?.link_post || (code ? `https://www.instagram.com/p/${code}/` : null);
       if (!url) return null;
-      const likes = toNum(it.likesCount);
       return {
-        id: it.shortCode || it.id || null,
+        id: it.raw_post_id || code || null,
         url,
-        text: it.caption || null,
-        author: it.ownerUsername || null,
-        publishedAt: normalizePublishedAt(it.timestamp, nowMs),
-        likes: likes !== null && likes >= 0 ? likes : null,
-        comments: toNum(it.commentsCount),
+        text: it.caption?.text || null,
+        author: it.user?.username || null,
+        // taken_at_date is ISO 8601 with offset.
+        publishedAt: normalizePublishedAt(it.taken_at_date, nowMs),
+        likes: toNum(it.like_count),
+        comments: toNum(it.comment_count),
         shares: null, // Instagram never exposes share counts
-        views: toNum(it.videoViewCount ?? it.videoPlayCount),
+        views: toNum(it.play_count),
       };
     },
   },
@@ -232,24 +341,61 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
   // actor upstream (device-id retry loops, 100s+ runs) — freshness is handled
   // by over-fetch + post-filter instead.
   tiktok: {
-    defaultActor: 'clockworks~tiktok-scraper',
+    // apidojo honours BOTH sortType:DATE_POSTED and a dateRange bucket, live-
+    // proved: a 15-item page came back entirely inside a 24h window, which is
+    // exactly the case that used to return 0. It is also ~10x cheaper than
+    // clockworks ($0.0003 vs $0.003/item) at 99.1% success over 1.24M runs.
+    defaultActor: 'apidojo~tiktok-scraper',
     actorEnv: 'APIFY_TT_SEARCH_ACTOR',
-    makeInput: (q, n) => ({ searchQueries: [q], searchSection: '/video', resultsPerPage: n }),
+    makeInput: (q, n, freshnessMs) => ({
+      keywords: [q],
+      // Only meaningful for keyword search (ignored for startUrls).
+      sortType: freshnessMs ? 'DATE_POSTED' : 'RELEVANCE',
+      dateRange: tiktokDateRange(freshnessMs),
+      maxItems: n,
+    }),
     normalize: (it: any, nowMs: number) => {
-      const url = it?.webVideoUrl || null;
-      if (!url || it.errorCode) return null;
+      const id = it?.id ?? null;
+      const url = it?.postPage || (it?.channel?.username && id ? `https://www.tiktok.com/@${it.channel.username}/video/${id}` : null);
+      if (!url) return null;
       return {
-        id: it.id || null,
+        id: id != null ? String(id) : null,
         url,
-        text: it.text || null,
-        author: it.authorMeta?.name || null,
-        publishedAt: normalizePublishedAt(it.createTimeISO ?? it.createTime, nowMs),
-        likes: it.diggCount ?? null,
-        comments: it.commentCount ?? null,
-        shares: it.shareCount ?? null,
-        views: it.playCount ?? null,
+        text: it.title || null,
+        author: it.channel?.username || it.channel?.name || null,
+        // uploadedAtFormatted is ISO; uploadedAt is epoch seconds.
+        publishedAt: normalizePublishedAt(it.uploadedAtFormatted ?? it.uploadedAt, nowMs),
+        likes: toNum(it.likes),
+        comments: toNum(it.comments),
+        shares: toNum(it.shares),
+        views: toNum(it.views),
+        meta: Array.isArray(it.hashtags) && it.hashtags.length ? { hashtags: it.hashtags } : undefined,
       };
     },
+    fallbacks: [
+      {
+        // Same price, clockworks-shaped output, but 77% success — alternate only.
+        actor: 'scrapeforge~tiktok-posts',
+        note: '$0.0003/item, 77% success; sortBy date-posted verified',
+        makeInput: (q, n, freshnessMs) => ({
+          scrapeMode: 'keyword',
+          keyword: q,
+          maxResults: n,
+          sortBy: freshnessMs ? 'date-posted' : 'relevance',
+          datePosted: tiktokDatePosted(freshnessMs),
+        }),
+        normalize: (it: any, nowMs: number) => clockworksNormalize(it, nowMs),
+      },
+      {
+        // The previous primary. Kept wired so a regression is one env var away,
+        // but it has no usable recency lever: its date/sort add-ons hang the
+        // actor (device-id retry loops), which is why freshness collapsed to 0.
+        actor: 'clockworks~tiktok-scraper',
+        note: 'previous primary; no working recency lever',
+        makeInput: (q, n) => ({ searchQueries: [q], searchSection: '/video', resultsPerPage: n }),
+        normalize: (it: any, nowMs: number) => clockworksNormalize(it, nowMs),
+      },
+    ],
   },
 
   // X / Twitter keyword search — apidojo~tweet-scraper.
@@ -294,6 +440,72 @@ export const APIFY_SEARCH: Record<string, ApifySearchSpec> = {
           : undefined,
       };
     },
+  },
+
+  // YouTube keyword search — streamers~youtube-scraper.
+  //
+  // NEW: YouTube previously had no Apify adapter at all, so it was
+  // SocialCrawl-only and went hard-down ("all providers failed") the moment
+  // those credits ran out. This gives it a real second provider.
+  //
+  // Recency is live-proved: sortingOrder 'date' + dateFilter bucket returned
+  // 5/5 items inside the same day. $0.004/item + a one-off $0.0013 when the
+  // date filter is used — pricier per item than the alternatives, but at 98.7%
+  // success over 2.88M runs reliability matters more for a fallback.
+  youtube: {
+    defaultActor: 'streamers~youtube-scraper',
+    actorEnv: 'APIFY_YT_SEARCH_ACTOR',
+    makeInput: (q, n, freshnessMs) => ({
+      searchQueries: [q],
+      maxResults: n,
+      ...(freshnessMs
+        ? { sortingOrder: 'date', dateFilter: youtubeDateFilter(freshnessMs) }
+        : { sortingOrder: 'relevance' }),
+    }),
+    normalize: (it: any, nowMs: number) => {
+      const url = it?.url || (it?.id ? `https://www.youtube.com/watch?v=${it.id}` : null);
+      if (!url) return null;
+      return {
+        id: it.id || null,
+        url,
+        text: it.title || it.text || null,
+        author: it.channelName || it.channelUsername || null,
+        publishedAt: normalizePublishedAt(it.date, nowMs),
+        likes: toNum(it.likes),
+        comments: toNum(it.commentsCount),
+        shares: null, // YouTube doesn't expose share counts
+        views: toNum(it.viewCount),
+      };
+    },
+    fallbacks: [
+      {
+        // 8x cheaper but only ~69% success — cost-optimised alternate.
+        // NOTE: normalize off `uploadDate`; its `publishDate` is inconsistently
+        // formatted (sometimes ISO, sometimes "18 Aug 2026").
+        actor: 'apidojo~youtube-scraper',
+        note: '$0.0005/item, 69% success; sort:"u" + uploadDate bucket verified',
+        makeInput: (q, n, freshnessMs) => ({
+          keywords: [q],
+          maxItems: n,
+          ...(freshnessMs ? { sort: 'u', uploadDate: youtubeUploadDate(freshnessMs) } : { sort: 'r' }),
+        }),
+        normalize: (it: any, nowMs: number) => {
+          const url = it?.url || (it?.id ? `https://www.youtube.com/watch?v=${it.id}` : null);
+          if (!url) return null;
+          return {
+            id: it.id || null,
+            url,
+            text: it.title || null,
+            author: it.channel?.name || null,
+            publishedAt: normalizePublishedAt(it.uploadDate, nowMs),
+            likes: toNum(it.likes),
+            comments: toNum(it.comments),
+            shares: null,
+            views: toNum(it.views),
+          };
+        },
+      },
+    ],
   },
 
   // LinkedIn post keyword search — harvestapi runs ~888K times/month at a
@@ -355,6 +567,45 @@ export async function apifyActorSearch(
   const spec = APIFY_SEARCH[platform];
   const actor = resolvedActor(platform);
   if (!spec || !actor) return { ok: false, status: 400, error: `No Apify adapter for ${platform}` };
+
+  // Try the primary, then each ranked fallback, until one yields results.
+  // Skipped while paginating: a cursor belongs to the actor that issued it, so
+  // switching actors mid-walk would silently return a different result space.
+  if (!endMs && spec.fallbacks?.length) {
+    const primary = await runCandidate(
+      platform, actor, { actor, makeInput: spec.makeInput, normalize: spec.normalize, pageStrategy: spec.pageStrategy },
+      queryStr, count, freshnessMs, undefined,
+    );
+    if (primary.ok && primary.results.length > 0) return primary;
+
+    for (const cand of spec.fallbacks) {
+      const why = primary.ok ? 'returned nothing' : `failed (${primary.error.slice(0, 60)})`;
+      console.warn(`[Apify] ${platform} primary ${actor} ${why} — trying ${cand.actor}`);
+      const alt = await runCandidate(platform, cand.actor, cand, queryStr, count, freshnessMs, undefined);
+      if (alt.ok && alt.results.length > 0) return alt;
+    }
+    return primary; // nothing worked; surface the primary's outcome
+  }
+  return runCandidate(
+    platform, actor,
+    { actor, makeInput: spec.makeInput, normalize: spec.normalize, pageStrategy: spec.pageStrategy },
+    queryStr, count, freshnessMs, endMs,
+  );
+}
+
+/** Execute one candidate actor and normalize its output. */
+async function runCandidate(
+  platform: string,
+  actor: string,
+  spec: ApifyCandidate,
+  queryStr: string,
+  count: number,
+  freshnessMs?: number,
+  endMs?: number,
+): Promise<
+  | { ok: true; results: SocialResult[]; fetched: number; nextCursorMs?: number; hasMore?: boolean }
+  | { ok: false; status: number; error: string }
+> {
   // A date-paged actor filters by start/end natively (accurate), so the 3x
   // over-fetch that compensates for the post-filter isn't needed. Others still
   // over-fetch to survive the freshness post-filter dropping items.
