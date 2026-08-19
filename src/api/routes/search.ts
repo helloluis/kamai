@@ -893,6 +893,32 @@ router.post('/social', async (req, res) => {
   const rank = <T extends { publishedAt: string | null }>(items: T[]): T[] =>
     explicitSort ? items : sortByRecency(items);
 
+  /**
+   * Tier arbitration — fall through on an EMPTY tier, not just on an error.
+   *
+   * The provider chain used to stop at the first tier that didn't throw, so a
+   * tier answering `success: true` with zero results counted as a win and the
+   * remaining tiers were never tried. Measured over 3 days: 435 of 629 TikTok
+   * SocialCrawl calls returned zero results with no error while the Apify tier
+   * sat idle and functional, and Instagram went 183/184 empty on the Brave
+   * fallback. Monitoring stayed green because nothing had failed.
+   *
+   * Now a tier that yields nothing is remembered but not accepted, and the next
+   * tier is attempted. If every tier comes back empty we return the best one we
+   * saw, so the response shape and `source` are still honest.
+   *
+   * Paginated requests are exempt: a cursor is issued BY a specific tier, so
+   * switching providers mid-walk would silently invalidate it.
+   */
+  const isPaging = typeof cursor === 'string' && cursor.length > 0;
+  let best: { send: () => void; n: number } | null = null;
+
+  const deliver = (n: number, send: () => void): boolean => {
+    if (n > 0 || isPaging) { send(); return true; }
+    if (!best || n > best.n) best = { send, n };
+    return false;
+  };
+
   // ── 1. SocialCrawl ──
   if (spec && SOCIALCRAWL_API_KEY) {
     try {
@@ -953,7 +979,7 @@ router.post('/social', async (req, res) => {
           upstream: estimateUpstream('socialcrawl', { credits: data.credits_used ?? 1 }),
           detail: platform,
         };
-        res.json({
+        const scPayload = {
           ok: true,
           source: 'social',
           platform,
@@ -961,8 +987,10 @@ router.post('/social', async (req, res) => {
           results: results.slice(0, requestedCount),
           nextCursor: data?.pagination?.next_cursor ?? data?.data?.next_cursor ?? undefined,
           hasMore: data?.pagination?.has_more ?? undefined,
-        });
-        return;
+        };
+        const scUsage = { ...res.locals.usage };
+        if (deliver(results.length, () => { res.locals.usage = scUsage; res.json(scPayload); })) return;
+        addUsageNote(res, 'socialcrawl empty — trying next tier');
       }
       const msg = data?.error?.message || `HTTP ${scResp.status}`;
       console.warn(`[Search/social] ${ts} | ${ip} | socialcrawl ${platform} error: ${String(msg).slice(0, 200)} — falling back`);
@@ -1007,11 +1035,14 @@ router.post('/social', async (req, res) => {
           upstream: estimateUpstream('apify', { platform, fetched: apify.fetched }),
           detail: platform,
         };
-        res.json({ ok: true, source: 'social', platform, query: queryStr, results, nextCursor, hasMore: apify.hasMore ?? false });
-        return;
+        const apPayload = { ok: true, source: 'social', platform, query: queryStr, results, nextCursor, hasMore: apify.hasMore ?? false };
+        const apUsage = { ...res.locals.usage };
+        if (deliver(results.length, () => { res.locals.usage = apUsage; res.json(apPayload); })) return;
+        addUsageNote(res, 'apify empty — trying next tier');
+      } else {
+        console.warn(`[Search/social] ${ts} | ${ip} | apify ${platform} error: ${apify.error.slice(0, 200)} — falling back`);
+        addUsageNote(res, `apify: ${apify.error.slice(0, 80)}`);
       }
-      console.warn(`[Search/social] ${ts} | ${ip} | apify ${platform} error: ${apify.error.slice(0, 200)} — falling back`);
-      addUsageNote(res, `apify: ${apify.error.slice(0, 80)}`);
     }
   }
 
@@ -1052,11 +1083,26 @@ router.post('/social', async (req, res) => {
       }
       console.log(`[Search/social] ${ts} | ${ip} | OK ${platform} ${results.length} results | ${elapsed}ms (brave site fallback${freshnessMs ? ', dateless dropped' : ''})`);
       res.locals.usage = { source: 'brave', results: results.length, upstream: estimateUpstream('brave'), detail: platform };
-      res.json({ ok: true, source: 'web', platform, query: queryStr, results, hasMore: false });
-      return;
+      const brPayload = { ok: true, source: 'web', platform, query: queryStr, results, hasMore: false };
+      const brUsage = { ...res.locals.usage };
+      if (deliver(results.length, () => { res.locals.usage = brUsage; res.json(brPayload); })) return;
+    } else {
+      console.error(`[Search/social] ${ts} | ${ip} | FAIL ${platform} | ${fallback.error.slice(0, 80)} | ${elapsed}ms`);
+      // Only surface the Brave error if no earlier tier produced anything at
+      // all; otherwise fall through and return the best tier we did reach.
+      if (!best) {
+        res.status(fallback.status).json({ ok: false, error: fallback.error });
+        return;
+      }
     }
-    console.error(`[Search/social] ${ts} | ${ip} | FAIL ${platform} | ${fallback.error.slice(0, 80)} | ${elapsed}ms`);
-    res.status(fallback.status).json({ ok: false, error: fallback.error });
+  }
+
+  // Every tier was tried. If any of them answered (just emptily), return that
+  // rather than a 502 — "no matches" is a valid result, not an outage.
+  if (best) {
+    addUsageNote(res, 'all tiers empty');
+    console.log(`[Search/social] ${ts} | ${ip} | EMPTY ${platform} — all tiers returned 0 results`);
+    (best as { send: () => void }).send();
     return;
   }
 
