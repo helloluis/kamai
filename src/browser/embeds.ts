@@ -97,20 +97,10 @@ export async function resolveEmbed(rawUrl: string): Promise<EmbedSpec | null> {
     return m ? xEmbed(m[1]) : null;
   }
 
-  // ── Instagram — posts and reels. /embed/captioned includes the caption text,
-  //    which is usually the substance of the post. ──
-  if (host === 'instagram.com') {
-    const m = path.match(/\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/);
-    if (!m) return null;
-    return {
-      platform: 'instagram',
-      url: `https://www.instagram.com/p/${m[1]}/embed/captioned/`,
-      selectors: ['.EmbedFrame', '.Embed', 'article', 'body > div'],
-      settleMs: 2200,
-      waitUntil: 'load', // networkidle never settles here
-      viewport: { width: 560, height: 1200 },
-    };
-  }
+  // ── Instagram — no embed. Its /embed/captioned endpoint 302-redirects this
+  //    datacenter IP to a login wall (verified 2026-08-20), so posts route to
+  //    the Apify card path (isInstagramPost) BEFORE resolveEmbed is reached.
+  //    Nothing here; a non-post instagram.com URL falls through to page render.
 
   // ── LinkedIn — public post URLs carry the activity id in the slug.
   //    The embed route accepts activity/share/ugcPost URNs; the numeric id is
@@ -232,6 +222,22 @@ export function isReddit(rawUrl: string): boolean {
   try {
     const h = new URL(rawUrl).hostname.toLowerCase().replace(/^(www|old|new|m)\./, '');
     return h === 'reddit.com' || h === 'redd.it' || h === 'redditmedia.com';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when the URL is an Instagram POST/reel permalink (has a /p|reel|tv/<code>
+ * segment). Instagram's embed is IP-blocked from this box, so these route to the
+ * Apify card path. Profile/other IG URLs return false and fall to page render.
+ */
+export function isInstagramPost(rawUrl: string): boolean {
+  try {
+    const u = new URL(rawUrl);
+    const h = u.hostname.toLowerCase().replace(/^(www|m)\./, '');
+    if (h !== 'instagram.com') return false;
+    return /\/(p|reel|reels|tv)\/[A-Za-z0-9_-]+/.test(u.pathname);
   } catch {
     return false;
   }

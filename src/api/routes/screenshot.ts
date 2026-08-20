@@ -21,6 +21,8 @@ import {
 } from '../../browser/screenshot.js';
 import { isReddit } from '../../browser/embeds.js';
 import { fetchRedditPost, redditCardHtml, redditCircuitStatus } from '../../screenshot/reddit.js';
+import { fetchInstagramPost, instagramCardHtml, instagramCircuitStatus } from '../../screenshot/instagram.js';
+import { isInstagramPost } from '../../browser/embeds.js';
 import { checkUrlResolved, normalizeUrl } from '../../browser/urlGuard.js';
 import {
   insertScreenshot, getScreenshot, readImage, saveImage, listScreenshots,
@@ -150,6 +152,25 @@ router.post('/', async (req, res) => {
       shot = { ...shot, strategy: 'apify:reddit-card', pageUrl: post.url, title: post.title };
       upstream = estimateUpstream('apify', { platform: 'reddit', fetched: 1 });
       addUsageNote(res, 'reddit via apify card');
+    } else if (isInstagramPost(url)) {
+      // Instagram's embed is IP-blocked (302 -> login) from this box, same as
+      // Reddit, so we fetch the post via Apify and render a card. Card pixels
+      // are ours; the data (and the image URL) come from the actor.
+      const circuit = instagramCircuitStatus();
+      if (!circuit.ok) {
+        addUsageNote(res, 'instagram circuit open');
+        res.status(503).json({
+          ok: false,
+          error: `Instagram capture temporarily unavailable (last error: ${circuit.lastError}). Retrying in ~${Math.round((circuit.retryInMs ?? 0) / 60000)}min.`,
+        });
+        return;
+      }
+      const post = await fetchInstagramPost(url);
+      const html = instagramCardHtml(post, new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC');
+      shot = await withCaptureSlot(() => captureHtml(html, '.card', { ...opts, width: 620 }));
+      shot = { ...shot, strategy: 'apify:instagram-card', pageUrl: post.url, title: post.caption?.slice(0, 80) };
+      upstream = estimateUpstream('apify', { platform: 'instagram', fetched: 1 });
+      addUsageNote(res, 'instagram via apify card');
     } else {
       shot = await withCaptureSlot(() => screenshot(url, opts));
       if (shot.strategy.startsWith('embed:')) upstream = estimateUpstream('embed');
