@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { Router } from 'express';
 
-import { getAllHealth } from '../actorHealth.js';
+import { actorReport } from '../actorHealth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +39,18 @@ interface Check {
   detail: string;
   value?: number;
   since?: string;
+  /**
+   * App-specific triage, carried so the monitor can set its paging threshold
+   * from the source's own judgement instead of re-deriving it from prose.
+   *
+   * kamai already knows the difference between an actor that blipped once and
+   * one that is genuinely dead — that is what the reprobe backoff ladder
+   * encodes. Leaving it out meant overwatch had to treat both as "down", and
+   * it duly paged for a single failed probe that recovered on the next one.
+   */
+  consecutiveFailures?: number;
+  firstFailedAt?: string;
+  recommendation?: string;
 }
 
 const RANK: Record<HealthState, number> = { ok: 0, warn: 1, down: 2 };
@@ -86,7 +98,7 @@ function guard(key: string, label: string, produce: () => Check[]): Check[] {
  * reads.
  */
 function actorChecks(): Check[] {
-  const rows = getAllHealth();
+  const rows = actorReport();
   if (rows.length === 0) {
     return [
       {
@@ -99,27 +111,26 @@ function actorChecks(): Check[] {
   }
 
   return rows.map((a) => {
-    const staleHours = a.checkedAt
-      ? (Date.now() - Date.parse(a.checkedAt)) / 3_600_000
-      : Infinity;
+    const downHours = a.firstFailedAt
+      ? (Date.now() - Date.parse(a.firstFailedAt)) / 3_600_000
+      : 0;
 
     let state: HealthState = 'ok';
-    let detail = `Collecting normally (${a.latencyMs}ms).`;
+    let detail = 'Collecting normally.';
 
     if (!a.ok) {
+      // Still `down` — the app's own verdict is unchanged, and softening it
+      // here would hide a real outage from the status page. Whether it is
+      // worth waking someone for is the monitor's decision, made from the
+      // recommendation and counts below.
       state = 'down';
-      const fails = a.consecutiveFailures ?? 0;
       detail = oneLine(
         `${a.actor} is failing` +
-          (fails ? ` (${fails} consecutive)` : '') +
-          (a.error ? ` — ${a.error}` : ''),
+          (a.consecutiveFailures ? ` (${a.consecutiveFailures} consecutive` +
+            (downHours >= 1 ? `, ${downHours.toFixed(0)}h` : '') + ')' : '') +
+          (a.lastError ? ` — ${a.lastError}` : ''),
         160,
       );
-    } else if (staleHours > 48) {
-      // A healthy actor that has not been probed in two days is not evidence
-      // of health; it is evidence the prober stopped.
-      state = 'warn';
-      detail = `Last probed ${Math.floor(staleHours)}h ago — the actor health scheduler may have stopped.`;
     }
 
     return {
@@ -127,8 +138,16 @@ function actorChecks(): Check[] {
       label: `${a.platform} search actor`,
       state,
       detail,
-      value: a.latencyMs,
-      ...(state !== 'ok' && a.firstFailedAt ? { since: a.firstFailedAt } : {}),
+      value: a.failures24h,
+      ...(a.ok
+        ? {}
+        : {
+            consecutiveFailures: a.consecutiveFailures,
+            recommendation: a.recommendation,
+            ...(a.firstFailedAt
+              ? { firstFailedAt: a.firstFailedAt, since: a.firstFailedAt }
+              : {}),
+          }),
     };
   });
 }
