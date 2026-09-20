@@ -85,6 +85,12 @@ const APIFY_COST: Record<string, { start: number; perResult: number }> = {
   // Reddit is the only route where that is true, and it is deliberate: no
   // other path reaches reddit.com from this server's IP at all.
   reddit: { start: 0.02, perResult: 0.002 },
+  // /search/comments — list prices, superseded by measuredCostPerRun once
+  // invoices land. Keys are distinct from the search/screenshot platforms so
+  // a 500-comment reddit thread does not rewrite screenshot unit cost.
+  'facebook-comments': { start: 0, perResult: 0.0004 }, // danek~facebook-comments-ppr $0.40/1k
+  'x-comments': { start: 0, perResult: 0.00015 }, // xquik~x-reply-scraper $0.15/1k
+  'reddit-comments': { start: 0.02, perResult: 0.002 }, // same actor as reddit screenshots
 };
 
 /** Estimate what one served call cost us upstream. `fetched` counts billed results incl. over-fetch. */

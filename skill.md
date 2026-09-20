@@ -729,6 +729,55 @@ back through secondary providers, then a site-scoped web search
 (`source: "web"`) where the platform indexes well — those results contain
 only `url` + `text` snippet.
 
+### POST /api/v1/search/comments
+
+Replies under one public post. Nested replies are flattened into the same
+list. Textless items are dropped.
+
+**Request:**
+```json
+{
+  "platform": "facebook",
+  "url": "https://www.facebook.com/page/posts/pfbid…",
+  "count": 300
+}
+```
+
+**Parameters:**
+- `platform` (required) — `facebook`, `x` (aliases: `twitter`, `x.com`), or
+  `reddit`
+- `url` (required) — the post permalink
+- `count` (optional) — 1–500, default 100. One page only; a truncated thread
+  is not retried.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "results": [
+    {
+      "id": "comment-id",
+      "url": "https://…",
+      "author": "display name",
+      "text": "comment body",
+      "publishedAt": "2026-08-01T12:00:00.000Z",
+      "likes": 4
+    }
+  ],
+  "hasMore": false,
+  "nextCursor": null
+}
+```
+
+`id`, `url`, `author`, `publishedAt`, and `likes` are best-effort. `text` is
+always present.
+
+**Errors (load-bearing):**
+- HTTP **404 means this route is not deployed.** A deleted, private, or
+  empty post returns `ok: true` with `results: []` — never 404.
+- Transient upstream failures are 5xx or `ok: false`.
+- Runs can take 20–150s (reddit is the slow end).
+
 ### Pagination & backfill
 
 A single request returns one page (up to `count`, max 100). To retrieve more —
@@ -779,6 +828,7 @@ Rules and guarantees:
 | `/search/image` | $0.003 |
 | `/screenshot` | $0.015 |
 | `/search/social` | $0.003 |
+| `/search/comments` | $0.003 floor, cost-plus on actor spend |
 
 Sister apps get the standard 50% discount.
 

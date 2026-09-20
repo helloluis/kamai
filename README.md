@@ -20,6 +20,7 @@ Public URL: `https://kamai.minai.work` — LLM-facing integration spec: [`skill.
 | `POST /api/v1/search/news` | credits | News search — news indexes, exact freshness windows, recency-ranked, non-news sources filtered |
 | `POST /api/v1/search/image` | credits | Image search — multi-provider with automatic failover |
 | `POST /api/v1/search/social` | credits | Social search: x/twitter, reddit, linkedin, tiktok, instagram, youtube, threads, pinterest, facebook posts + events — freshness windows + cursor pagination (x + SocialCrawl platforms) |
+| `POST /api/v1/search/comments` | credits | Comments/replies under a facebook, x, or reddit post permalink |
 | `POST /api/v1/screenshot` | credits | Screenshot the relevant part of a URL — social posts via official embeds |
 | `GET /api/v1/screenshot/:id/image` | — | Fetch the captured image (public, expiring) |
 | `POST /api/v1/image/generate` | credits | Generate an image via OpenAI / Ideogram / DashScope (cost-plus, price in response) |
@@ -61,6 +62,7 @@ Identify with `x-api-key` or `x-wallet-address` header. Sister apps (keys in `SI
 - **Domain memories**: learnings saved via `POST /browse/memories` are attached to every browse response for that domain, so agents improve over time.
 - **Screenshots** (`src/browser/screenshot.ts`): social posts are captured by rendering the platform's *own* embed iframe — verified working from this VPS's datacenter IP for X, Instagram, LinkedIn, Facebook, Threads, Bluesky and TikTok, none of which render a usable post from their raw permalink. Reddit blocks the server IP on every surface, so it goes through Apify and is rendered as a capture card. Ordinary pages are cropped to the LCP region. `fullPage` is never used: on a large real page it returns a **0-byte buffer after 51 seconds**, so capture is always `setViewportSize` → `scrollTo` → viewport shot, which is ~150x faster.
 - **Search normalization** (`src/api/searchNormalize.ts`): news and social results are uniform regardless of which provider answered — `publishedAt` is always ISO 8601 or null (providers emit unix epochs, `"2 hours ago"`, `"Aug 5, 2026"`), ranking is newest-first, and `/news` drops non-news sources via a blocklist extendable with `NEWS_BLOCKED_HOSTS`.
+- **Comments** (`src/api/comments.ts`): `POST /search/comments` crawls replies under one facebook / x / reddit permalink via Apify. Nested replies are flattened. A deleted or empty post returns `ok: true` with `results: []` — HTTP 404 is reserved for “route not deployed”.
 
 ## Deployment
 
@@ -87,6 +89,7 @@ src/
     routes/             — browse, search, memories, brochure, session, account, deposit, health
     searchNormalize.ts  — ISO timestamp normalization, recency sort, news-source blocklist
     apifySearch.ts      — Apify actor registry + 72h actor health checks
+    comments.ts         — post-permalink comment crawl (facebook / x / reddit)
     usage.ts            — request analytics + /adm dashboard
   browser/
     engine.ts           — shared Chromium instance + stealth context
@@ -110,3 +113,22 @@ src/
   brochure/             — react-pdf templates, renderer, expiring storage
 dashboard/              — Next.js landing page (separate app, port 3200)
 ```
+
+
+### Authenticated Facebook page jobs
+
+Sister applications can enumerate a watchlist through
+`POST /api/v1/search/health/facebook-pages/jobs` with their `x-api-key` and
+JSON `{requestKey, urls, from, to}`. The endpoint accepts 1–100 public Facebook
+page URLs and an ISO timestamp window of at most 48 hours. Reusing a request key
+with identical input returns the existing job; changing its input returns 409.
+Poll `GET /api/v1/search/health/facebook-pages/jobs/:id` with the same key. Terminal
+responses include all raw provider items, including errors.
+
+Jobs use the existing Apify credential, a 100-post/page limit, 15-minute provider
+timeout and $8 charge cap. Clients must report cap hits and unavailable pages as
+coverage gaps. Jobs persist in `data/facebook-page-jobs.sqlite` (or DATA_DIR);
+include it in backups. A submission with an ambiguous upstream response is marked
+`submission-uncertain` and is never automatically reissued. An operator must
+reconcile it against Apify run history. The route is mounted only below the
+sister-key auth gate, not under the public legacy `/search` alias.

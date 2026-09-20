@@ -4,6 +4,7 @@
  * POST /api/v1/search/social — social platform search (reddit, linkedin, tiktok,
  *                              youtube, threads, pinterest, instagram, facebook
  *                              posts, facebook events)
+ * POST /api/v1/search/comments — replies under a facebook / x / reddit post
  *
  * Provider order: Serper (Google) is PRIMARY for web/image; Brave is the
  * fallback when Serper errors, times out, or isn't configured. Brave /web
@@ -35,6 +36,14 @@ import {
 import { estimateUpstream } from '../usage.js';
 import { priceFor, PRICE_FLOORS } from '../../payment/pricing.js';
 import { normalizePublishedAt, sortByRecency, isNewsSource } from '../searchNormalize.js';
+import {
+  canonicalCommentPlatform,
+  checkCommentUrl,
+  COMMENT_PLATFORMS,
+  commentCostKey,
+  fetchComments,
+  parseCommentCount,
+} from '../comments.js';
 
 const router = Router();
 
@@ -1112,6 +1121,81 @@ router.post('/social', async (req, res) => {
   }
 
   res.status(502).json({ ok: false, error: `Social search unavailable for ${platform} (all providers failed or unconfigured)` });
+});
+
+// ─── /comments — replies under one post permalink ───
+//
+// HTTP 404 is reserved for "this route does not exist". Sentigen probes the
+// path every collect run and treats 404 as "kamai hasn't shipped comments
+// yet". A deleted, private, or empty post MUST come back 200 + empty results
+// so it is stamped crawled and never retried. Transient actor failures are
+// 5xx / ok:false and get retried on a later run.
+
+router.post('/comments', async (req, res) => {
+  if (!APIFY_API_TOKEN) {
+    res.status(503).json({ ok: false, error: 'Comments not configured on kamai server (APIFY_API_TOKEN missing)' });
+    return;
+  }
+
+  const { platform: platformRaw, url, count } = req.body as Record<string, unknown>;
+  const platform = canonicalCommentPlatform(platformRaw);
+  if (!platform) {
+    res.status(400).json({
+      ok: false,
+      error: `Missing or unknown "platform". Supported: ${COMMENT_PLATFORMS.join(', ')} (x aliases: twitter, x.com)`,
+    });
+    return;
+  }
+
+  const checked = checkCommentUrl(platform, url);
+  if (!checked.ok) {
+    res.status(400).json({ ok: false, error: checked.error });
+    return;
+  }
+
+  const requestedCount = parseCommentCount(count);
+  const ts = new Date().toISOString();
+  const ip = callerIp(req);
+  const t0 = Date.now();
+  console.log(`[Search/comments] ${ts} | ${ip} | REQ ${platform} ${checked.url.slice(0, 90)} n=${requestedCount}`);
+
+  const outcome = await fetchComments(platform, checked.url, checked.parsed, requestedCount);
+  const elapsed = Date.now() - t0;
+  const costPlatform = commentCostKey(platform);
+
+  if (!outcome.ok) {
+    console.warn(`[Search/comments] ${ts} | ${ip} | FAIL ${platform} ${outcome.status} | ${elapsed}ms | ${outcome.error.slice(0, 160)}`);
+    addUsageNote(res, `${platform}: ${outcome.error.slice(0, 80)}`);
+    // 503 is circuit-open / unconfigured — no actor run. 502/504 usually means
+    // Apify already billed a failed run, so record a 1-item estimate.
+    if (outcome.status !== 503) {
+      res.locals.usage = {
+        source: 'apify',
+        results: 0,
+        fetched: 0,
+        upstream: estimateUpstream('apify', { platform: costPlatform, fetched: 1 }),
+        detail: costPlatform,
+      };
+    }
+    res.status(outcome.status).json({ ok: false, error: outcome.error });
+    return;
+  }
+
+  const upstream = estimateUpstream('apify', { platform: costPlatform, fetched: outcome.fetched });
+  res.locals.usage = {
+    source: 'apify',
+    results: outcome.results.length,
+    fetched: outcome.fetched,
+    upstream,
+    detail: costPlatform,
+  };
+  console.log(`[Search/comments] ${ts} | ${ip} | OK ${platform} ${outcome.results.length}/${outcome.fetched} | ${elapsed}ms`);
+  res.json({
+    ok: true,
+    results: outcome.results,
+    hasMore: outcome.hasMore,
+    nextCursor: outcome.nextCursor,
+  });
 });
 
 export default router;

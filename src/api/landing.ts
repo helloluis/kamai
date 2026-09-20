@@ -186,7 +186,7 @@ export function landingPage(): string {
   rather than returning a blank image — a screenshot that proves nothing is worse than no screenshot.</p>
 
   <h2 id="search">Search</h2>
-  <p>Web, news, image, and social search across multiple premium providers with automatic failover — one API, no search keys to manage on your side.</p>
+  <p>Web, news, image, and social search across multiple premium providers with automatic failover — one API, no search keys to manage on your side. Post-comment crawl for Facebook, X, and Reddit.</p>
   <p><span class="method">POST</span> <code>/api/v1/search/web</code> &nbsp;·&nbsp; legacy alias <code>/search/web</code></p>
   <pre>{ "q": "Tim Cook age", "count": 5, "country": "US" }
 
@@ -257,6 +257,22 @@ export function landingPage(): string {
   If a platform's primary backend is unavailable, queries automatically fall back through secondary providers,
   then a site-scoped web search (<code>source: "web"</code>) where the platform indexes well.</p>
 
+  <h3>Post comments</h3>
+  <p><span class="method">POST</span> <code>/api/v1/search/comments</code> &nbsp;·&nbsp; legacy alias <code>/search/comments</code></p>
+  <p>
+    Replies under one public Facebook, X, or Reddit post. Nested replies are flattened.
+    Textless items are dropped.
+  </p>
+  <pre>{ "platform": "facebook", "url": "https://www.facebook.com/…/posts/pfbid…", "count": 300 }
+
+// → { "ok": true, "results": [{ "id", "url"?, "author", "text",
+//                   "publishedAt"?, "likes"? }],
+//     "hasMore": false, "nextCursor": null }</pre>
+  <p class="note"><code>platform</code> <code>facebook</code> · <code>x</code> (aliases <code>twitter</code>, <code>x.com</code>) · <code>reddit</code>.
+  <code>count</code> 1–500 (default 100). A deleted, private, or empty post returns <code>ok: true</code> with
+  an empty list — never HTTP 404 (404 means the route itself is missing).
+  Expect 20–150s; reddit is the slow end.</p>
+
   <h2 id="memories">Domain memories</h2>
   <p>
     Every browse response includes a <code>memories</code> array — learnings saved by agents from
@@ -305,7 +321,7 @@ export function landingPage(): string {
   <table>
     <tr><th></th><th>Route</th><th>Auth</th></tr>
     <tr><td><span class="method">POST</span></td><td><code>/api/v1/browse</code></td><td>key / wallet <span class="note">(legacy /browse: none)</span></td></tr>
-    <tr><td><span class="method">POST</span></td><td><code>/api/v1/search/web</code> · <code>/api/v1/search/news</code> · <code>/api/v1/search/image</code> · <code>/api/v1/search/social</code></td><td>key / wallet <span class="note">(legacy /search/*: none)</span></td></tr>
+    <tr><td><span class="method">POST</span></td><td><code>/api/v1/search/web</code> · <code>/api/v1/search/news</code> · <code>/api/v1/search/image</code> · <code>/api/v1/search/social</code> · <code>/api/v1/search/comments</code></td><td>key / wallet <span class="note">(legacy /search/*: none)</span></td></tr>
     <tr><td><span class="method">POST</span></td><td><code>/api/v1/screenshot</code> <span class="note">· <code>GET /:id/image</code> is public</span></td><td>key / wallet</td></tr>
     <tr><td><span class="method">GET·POST·DEL</span></td><td><code>/browse/memories</code> · <code>/api/v1/browse/memories</code></td><td>none</td></tr>
     <tr><td><span class="method">POST</span></td><td><code>/api/v1/brochure/generate</code></td><td>key / wallet</td></tr>

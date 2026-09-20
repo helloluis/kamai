@@ -20,9 +20,11 @@
  * request across a day of restarts.
  */
 import { Router } from 'express';
+import facebookPagesRouter from './facebookPages.js';
 import { SISTER_KEYS } from '../payment/config.js';
 import { normalizePublishedAt } from './searchNormalize.js';
 import { startApifyCostScheduler, apifyCostSnapshot, measuredCostPerRun } from './apifyCost.js';
+import { commentPlatformActorMap } from './comments.js';
 import {
   shouldAttempt, recordOutcome, getAllHealth, isKnownFailing, dueForHealthCheck,
   actorReport, recentFailures, type ActorHealth,
@@ -769,6 +771,10 @@ export function platformActorMap(): Record<string, string> {
   }
   // Reddit is not a search platform but its screenshot actor bills the same way.
   map.reddit = process.env.APIFY_REDDIT_ACTOR || 'trudax~reddit-scraper-lite';
+  // Comment actors are separate vendors from keyword search. Reddit comments
+  // reuse the screenshot actor, so they are omitted here to avoid attributing
+  // that spend twice.
+  Object.assign(map, commentPlatformActorMap());
   return map;
 }
 
@@ -803,6 +809,8 @@ searchOpsRouter.use((req, res, next) => {
   res.status(404).json({ ok: false, error: 'Not found' });
 });
 
+searchOpsRouter.use('/facebook-pages', facebookPagesRouter);
+
 searchOpsRouter.get('/', (_req, res) => {
   const byPlatform = new Map(getAllHealth().map((h) => [h.platform, h]));
   res.json({
@@ -825,7 +833,12 @@ searchOpsRouter.get('/', (_req, res) => {
 searchOpsRouter.get('/actors', (req, res) => {
   const report = actorReport(
     (p) => measuredCostPerRun(p),
-    (p) => (p === 'reddit' ? 'APIFY_REDDIT_ACTOR' : APIFY_SEARCH[p]?.actorEnv ?? null),
+    (p) => {
+      if (p === 'reddit') return 'APIFY_REDDIT_ACTOR';
+      if (p === 'facebook-comments') return 'APIFY_FB_COMMENTS_ACTOR';
+      if (p === 'x-comments') return 'APIFY_X_COMMENTS_ACTOR';
+      return APIFY_SEARCH[p]?.actorEnv ?? null;
+    },
   );
   const platform = typeof req.query.platform === 'string' ? req.query.platform : null;
   res.json({
